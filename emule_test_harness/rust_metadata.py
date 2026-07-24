@@ -136,6 +136,40 @@ def replace_kad_bootstrap_endpoints(db_path: Path, endpoints: list[str]) -> None
         conn.commit()
 
 
+def seed_local_user_hash(db_path: Path, user_hash: bytes) -> None:
+    """Seed the Rust ED2K user-hash identity from stock ``preferences.dat`` bytes."""
+
+    if len(user_hash) != 16:
+        raise ValueError("ED2K user hash must be exactly 16 bytes")
+    normalized = bytearray(user_hash)
+    normalized[5] = 0x0E
+    normalized[14] = 0x6F
+    if _user_hash_is_bad(bytes(normalized)):
+        raise ValueError("ED2K user hash must not be an eMule bad hash")
+    now = _now_ms()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO local_identities(
+                identity_kind, public_identity, private_secret, created_at_ms, updated_at_ms
+            )
+            VALUES ('ed2k-user-hash', ?, NULL, ?, ?)
+            ON CONFLICT(identity_kind) DO UPDATE SET
+                public_identity = excluded.public_identity,
+                private_secret = NULL,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            (bytes(normalized), now, now),
+        )
+        conn.commit()
+
+
+def _user_hash_is_bad(user_hash: bytes) -> bool:
+    lo = int.from_bytes(user_hash[:8], "little")
+    hi = int.from_bytes(user_hash[8:], "little")
+    return (lo & 0xFFFF_00FF_FFFF_FFFF) == 0 and (hi & 0xFF00_FFFF_FFFF_FFFF) == 0
+
+
 def seed_server(db_path: Path, server: dict[str, object]) -> None:
     """Seed one enabled ED2K server row into the Rust SQLite profile."""
 
@@ -265,6 +299,9 @@ def seed_transfer_manifest(
     upload_priority: str = "normal",
     auto_upload_priority: bool = False,
     all_time_uploaded_bytes: int = 0,
+    all_time_upload_requests: int = 0,
+    all_time_upload_accepts: int = 0,
+    last_upload_request_ms: int = 0,
     comment: str = "",
     rating: int = 0,
     source_path: str | None = None,
@@ -298,9 +335,11 @@ def seed_transfer_manifest(
                 part_size, part_count, completed, md4_hashset_acquired,
                 aich_hashset_acquired, aich_root, upload_priority,
                 auto_upload_priority, comment, rating, all_time_uploaded_bytes,
+                all_time_upload_requests, all_time_upload_accepts,
+                last_upload_request_ms,
                 first_seen_ms, last_seen_ms, updated_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ed2k_hash) DO UPDATE SET
                 size_bytes = excluded.size_bytes,
                 display_name = excluded.display_name,
@@ -315,6 +354,9 @@ def seed_transfer_manifest(
                 comment = excluded.comment,
                 rating = excluded.rating,
                 all_time_uploaded_bytes = excluded.all_time_uploaded_bytes,
+                all_time_upload_requests = excluded.all_time_upload_requests,
+                all_time_upload_accepts = excluded.all_time_upload_accepts,
+                last_upload_request_ms = excluded.last_upload_request_ms,
                 last_seen_ms = excluded.last_seen_ms,
                 updated_at_ms = excluded.updated_at_ms
             """,
@@ -333,6 +375,9 @@ def seed_transfer_manifest(
                 comment,
                 rating,
                 all_time_uploaded_bytes,
+                all_time_upload_requests,
+                all_time_upload_accepts,
+                last_upload_request_ms,
                 now,
                 now,
                 now,
@@ -458,6 +503,9 @@ def seed_share_in_place_manifest(
     upload_priority: str = "normal",
     auto_upload_priority: bool = False,
     all_time_uploaded_bytes: int = 0,
+    all_time_upload_requests: int = 0,
+    all_time_upload_accepts: int = 0,
+    last_upload_request_ms: int = 0,
 ) -> None:
     """Seed a completed shared-file manifest that Rust can reload without hashing.
 
@@ -482,6 +530,9 @@ def seed_share_in_place_manifest(
         upload_priority=upload_priority,
         auto_upload_priority=auto_upload_priority,
         all_time_uploaded_bytes=all_time_uploaded_bytes,
+        all_time_upload_requests=all_time_upload_requests,
+        all_time_upload_accepts=all_time_upload_accepts,
+        last_upload_request_ms=last_upload_request_ms,
         source_path=source_path,
         source_mtime_ms=source_mtime_ms,
     )
@@ -569,6 +620,9 @@ def _seed_share_in_place_manifest_conn(
     upload_priority: str = "normal",
     auto_upload_priority: bool = False,
     all_time_uploaded_bytes: int = 0,
+    all_time_upload_requests: int = 0,
+    all_time_upload_accepts: int = 0,
+    last_upload_request_ms: int = 0,
     seed_piece_rows: bool = True,
 ) -> None:
     md4_hashset = md4_hashset or []
@@ -584,9 +638,11 @@ def _seed_share_in_place_manifest_conn(
             part_size, part_count, completed, md4_hashset_acquired,
             aich_hashset_acquired, aich_root, upload_priority,
             auto_upload_priority, all_time_uploaded_bytes,
+            all_time_upload_requests, all_time_upload_accepts,
+            last_upload_request_ms,
             first_seen_ms, last_seen_ms, updated_at_ms
         )
-        VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ed2k_hash) DO UPDATE SET
             size_bytes = excluded.size_bytes,
             display_name = excluded.display_name,
@@ -599,6 +655,9 @@ def _seed_share_in_place_manifest_conn(
             upload_priority = excluded.upload_priority,
             auto_upload_priority = excluded.auto_upload_priority,
             all_time_uploaded_bytes = excluded.all_time_uploaded_bytes,
+            all_time_upload_requests = excluded.all_time_upload_requests,
+            all_time_upload_accepts = excluded.all_time_upload_accepts,
+            last_upload_request_ms = excluded.last_upload_request_ms,
             last_seen_ms = excluded.last_seen_ms,
             updated_at_ms = excluded.updated_at_ms
         """,
@@ -613,6 +672,9 @@ def _seed_share_in_place_manifest_conn(
             upload_priority,
             1 if auto_upload_priority else 0,
             all_time_uploaded_bytes,
+            all_time_upload_requests,
+            all_time_upload_accepts,
+            last_upload_request_ms,
             now,
             now,
             now,
@@ -741,6 +803,9 @@ def read_transfer_manifest(db_path: Path, ed2k_hash: str) -> dict | None:
                         ELSE lower(hex(known_files.aich_root)) END,
                    known_files.upload_priority, known_files.comment, known_files.rating,
                    known_files.auto_upload_priority, known_files.all_time_uploaded_bytes,
+                   known_files.all_time_upload_requests,
+                   known_files.all_time_upload_accepts,
+                   known_files.last_upload_request_ms,
                    source_paths.display_path, transfers.source_mtime_ms
             FROM known_files
             LEFT JOIN transfers ON transfers.known_file_id = known_files.id
@@ -800,8 +865,11 @@ def read_transfer_manifest(db_path: Path, ed2k_hash: str) -> dict | None:
         "rating": row[12],
         "auto_upload_priority": bool(row[13]),
         "all_time_uploaded_bytes": row[14],
-        "source_path": row[15],
-        "source_mtime_ms": row[16],
+        "all_time_upload_requests": row[15],
+        "all_time_upload_accepts": row[16],
+        "last_upload_request_ms": row[17],
+        "source_path": row[18],
+        "source_mtime_ms": row[19],
         "md4_hashset": md4_hashset,
         "aich_hashset": aich_hashset,
         "sources": sources,

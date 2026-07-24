@@ -18,6 +18,7 @@ def main() -> int:
     parser.add_argument("--rust-repo", type=Path, required=True)
     parser.add_argument("--metadata-db", type=Path, required=True)
     parser.add_argument("--known-met", type=Path, required=True)
+    parser.add_argument("--known2-64-met", type=Path)
     parser.add_argument("--inputs", type=Path, help="live-wire inputs JSON with shared_directories intent")
     parser.add_argument("--shared-root", type=Path, action="append", default=[])
     parser.add_argument("--shared-dir-file", type=Path)
@@ -38,6 +39,7 @@ def main() -> int:
         rust_repo=args.rust_repo,
         metadata_db=args.metadata_db,
         known_met=args.known_met,
+        known2_64_met=args.known2_64_met,
         shared_roots=shared_roots,
         dry_run=args.dry_run,
     )

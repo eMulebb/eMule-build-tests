@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+import binascii
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,9 +21,16 @@ from emule_test_harness import rust_metadata
 
 MET_HEADER = 0x0E
 MET_HEADER_I64TAGS = 0x0F
+KNOWN2_MET_VERSION = 0x02
 FT_FILENAME = 0x01
 FT_FILESIZE = 0x02
+FT_ULPRIORITY = 0x19
+FT_AICH_HASH = 0x27
 FT_AICHHASHSET = 0x35
+FT_ATTRANSFERRED = 0x50
+FT_ATREQUESTED = 0x51
+FT_ATACCEPTED = 0x52
+FT_ATTRANSFERREDHI = 0x54
 TAGTYPE_STRING = 0x02
 TAGTYPE_UINT32 = 0x03
 TAGTYPE_FLOAT32 = 0x04
@@ -33,6 +42,14 @@ TAGTYPE_UINT8 = 0x09
 TAGTYPE_UINT64 = 0x0B
 TAGTYPE_STR1 = 0x11
 TAGTYPE_STR16 = 0x20
+LAST_REQUEST_TAG_NAME = "LastRequest"
+
+PR_LOW = 0
+PR_NORMAL = 1
+PR_HIGH = 2
+PR_VERYHIGH = 3
+PR_VERYLOW = 4
+PR_AUTO = 5
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,12 @@ class KnownMetEntry:
     size_bytes: int | None
     aich_root: str | None
     aich_hashset: list[str]
+    upload_priority: str
+    auto_upload_priority: bool
+    all_time_uploaded_bytes: int
+    all_time_upload_requests: int
+    all_time_upload_accepts: int
+    last_upload_request_ms: int
 
 
 @dataclass(frozen=True)
@@ -104,11 +127,34 @@ def parse_known_met(path: Path) -> list[KnownMetEntry]:
     return entries
 
 
+def parse_known2_64_met(path: Path) -> dict[str, list[str]]:
+    """Parse stock ``known2_64.met`` into AICH root -> part hashes."""
+
+    reader = BinaryReader(path.read_bytes())
+    version = reader.u8()
+    if version != KNOWN2_MET_VERSION:
+        raise ValueError(f"unsupported known2_64.met header 0x{version:02x}")
+    entries: dict[str, list[str]] = {}
+    index = 0
+    while reader.remaining() > 0:
+        if reader.remaining() < 24:
+            raise ValueError(f"truncated known2_64.met record {index}")
+        root = reader.read(20).hex()
+        hash_count = reader.u32()
+        needed = hash_count * 20
+        if reader.remaining() < needed:
+            raise ValueError(f"known2_64.met record {index} declares {hash_count} hashes past EOF")
+        entries[root] = [reader.read(20).hex() for _ in range(hash_count)]
+        index += 1
+    return entries
+
+
 def import_mfc_known_met_hashes(
     *,
     rust_repo: Path,
     metadata_db: Path,
     known_met: Path,
+    known2_64_met: Path | None = None,
     shared_roots: list[object],
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -116,6 +162,7 @@ def import_mfc_known_met_hashes(
         rust_metadata.create_metadata_db(rust_repo, metadata_db)
 
     entries = parse_known_met(known_met)
+    known2_aich = parse_known2_64_met(known2_64_met) if known2_64_met is not None and known2_64_met.is_file() else {}
     candidates = scan_shared_file_candidates(shared_roots)
     by_key: dict[tuple[str, int, int], list[SharedFileCandidate]] = {}
     for candidate in candidates:
@@ -136,6 +183,9 @@ def import_mfc_known_met_hashes(
     }
     matched = 0
     duplicate_records = 0
+    known2_aich_used = 0
+    stats_records = 0
+    stats_source_paths = 0
     manifests: list[dict[str, Any]] = []
     for entry in entries:
         if entry.name is None or entry.size_bytes is None:
@@ -148,7 +198,10 @@ def import_mfc_known_met_hashes(
         if len(matches) == 0:
             reason_counts["no_path_match"] += 1
             continue
-        if entry.aich_root is not None and len(entry.aich_hashset) != expected_aich_hash_count(entry.size_bytes):
+        aich_hashset = _effective_aich_hashset(entry, known2_aich, entry.size_bytes)
+        if entry.aich_root is not None and not entry.aich_hashset and aich_hashset:
+            known2_aich_used += 1
+        if entry.aich_root is not None and len(aich_hashset) != expected_aich_hash_count(entry.size_bytes):
             reason_counts["aich_count_mismatch"] += 1
             continue
 
@@ -164,6 +217,15 @@ def import_mfc_known_met_hashes(
         matched += 1
         if len(matches) > 1:
             duplicate_records += 1
+        has_stats = (
+            entry.all_time_uploaded_bytes > 0
+            or entry.all_time_upload_requests > 0
+            or entry.all_time_upload_accepts > 0
+            or entry.last_upload_request_ms > 0
+        )
+        if has_stats:
+            stats_records += 1
+            stats_source_paths += len(matches)
         if not dry_run:
             for candidate in matches:
                 manifests.append(
@@ -171,11 +233,17 @@ def import_mfc_known_met_hashes(
                         "ed2k_hash": entry.ed2k_hash,
                         "name": entry.name,
                         "size_bytes": entry.size_bytes,
-                        "source_path": str(candidate.path),
+                        "source_path": normal_windows_display_path(candidate.path),
                         "source_mtime_ms": candidate.mtime_ms,
                         "md4_hashset": entry.md4_hashset,
                         "aich_root": entry.aich_root,
-                        "aich_hashset": entry.aich_hashset,
+                        "aich_hashset": aich_hashset,
+                        "upload_priority": entry.upload_priority,
+                        "auto_upload_priority": entry.auto_upload_priority,
+                        "all_time_uploaded_bytes": entry.all_time_uploaded_bytes,
+                        "all_time_upload_requests": entry.all_time_upload_requests,
+                        "all_time_upload_accepts": entry.all_time_upload_accepts,
+                        "last_upload_request_ms": entry.last_upload_request_ms,
                     }
                 )
     if manifests:
@@ -190,6 +258,10 @@ def import_mfc_known_met_hashes(
         "sharedFilesScanned": len(candidates),
         "matchedRecords": matched,
         "duplicateRecords": duplicate_records,
+        "known2AichRecords": len(known2_aich),
+        "known2AichUsed": known2_aich_used,
+        "statsRecords": stats_records,
+        "statsSourcePaths": stats_source_paths,
         "importedRecords": matched,
         "importedSourcePaths": len(manifests),
         "dryRun": dry_run,
@@ -203,6 +275,7 @@ def import_mfc_shared_file_rows_hashes(
     rust_repo: Path,
     metadata_db: Path,
     known_met: Path,
+    known2_64_met: Path | None = None,
     shared_file_rows: list[dict[str, Any]],
     shared_roots: list[Path],
     dry_run: bool = False,
@@ -219,8 +292,9 @@ def import_mfc_shared_file_rows_hashes(
         rust_metadata.create_metadata_db(rust_repo, metadata_db)
 
     known_entries = {entry.ed2k_hash: entry for entry in parse_known_met(known_met)}
+    known2_aich = parse_known2_64_met(known2_64_met) if known2_64_met is not None and known2_64_met.is_file() else {}
     roots = {_canonical_existing_root(root) for root in shared_roots if root.is_dir()}
-    parsed_rows: list[tuple[MfcSharedFileRow, KnownMetEntry, int]] = []
+    parsed_rows: list[tuple[MfcSharedFileRow, KnownMetEntry, int, list[str]]] = []
     reason_counts = {
         "invalid_row": 0,
         "path_outside_shared_roots": 0,
@@ -256,10 +330,11 @@ def import_mfc_shared_file_rows_hashes(
         if len(entry.md4_hashset) != expected_md4_hash_count(parsed.size_bytes):
             reason_counts["md4_count_mismatch"] += 1
             continue
-        if entry.aich_root is not None and len(entry.aich_hashset) != expected_aich_hash_count(parsed.size_bytes):
+        aich_hashset = _effective_aich_hashset(entry, known2_aich, parsed.size_bytes)
+        if entry.aich_root is not None and len(aich_hashset) != expected_aich_hash_count(parsed.size_bytes):
             reason_counts["aich_count_mismatch"] += 1
             continue
-        parsed_rows.append((parsed, entry, stat.st_mtime_ns // 1_000_000))
+        parsed_rows.append((parsed, entry, stat.st_mtime_ns // 1_000_000, aich_hashset))
 
     if not dry_run:
         rust_metadata.seed_share_in_place_manifests(
@@ -269,13 +344,19 @@ def import_mfc_shared_file_rows_hashes(
                     "ed2k_hash": parsed.ed2k_hash,
                     "name": parsed.name,
                     "size_bytes": parsed.size_bytes,
-                    "source_path": str(parsed.path),
+                    "source_path": normal_windows_display_path(parsed.path),
                     "source_mtime_ms": source_mtime_ms,
                     "md4_hashset": entry.md4_hashset,
                     "aich_root": entry.aich_root,
-                    "aich_hashset": entry.aich_hashset,
+                    "aich_hashset": aich_hashset,
+                    "upload_priority": entry.upload_priority,
+                    "auto_upload_priority": entry.auto_upload_priority,
+                    "all_time_uploaded_bytes": entry.all_time_uploaded_bytes,
+                    "all_time_upload_requests": entry.all_time_upload_requests,
+                    "all_time_upload_accepts": entry.all_time_upload_accepts,
+                    "last_upload_request_ms": entry.last_upload_request_ms,
                 }
-                for parsed, entry, source_mtime_ms in parsed_rows
+                for parsed, entry, source_mtime_ms, aich_hashset in parsed_rows
             ],
             seed_piece_rows=False,
         )
@@ -285,6 +366,15 @@ def import_mfc_shared_file_rows_hashes(
         "sharedFileRows": len(shared_file_rows),
         "matchedRows": len(parsed_rows),
         "importedRows": 0 if dry_run else len(parsed_rows),
+        "known2AichRecords": len(known2_aich),
+        "statsRows": sum(
+            1
+            for _, entry, _, _ in parsed_rows
+            if entry.all_time_uploaded_bytes > 0
+            or entry.all_time_upload_requests > 0
+            or entry.all_time_upload_accepts > 0
+            or entry.last_upload_request_ms > 0
+        ),
         "dryRun": dry_run,
         "skipped": reason_counts,
         "metadataDb": str(metadata_db),
@@ -333,6 +423,15 @@ def scan_shared_file_candidates(roots: list[object]) -> list[SharedFileCandidate
                 )
             )
     return candidates
+
+
+def normal_windows_display_path(path: Path | str) -> str:
+    value = str(path)
+    if value.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[8:]
+    if value.startswith("\\\\?\\"):
+        return value[4:]
+    return value
 
 
 def _shared_root_scan_parts(root: object) -> tuple[Path, bool]:
@@ -418,6 +517,23 @@ def expected_aich_hash_count(file_size: int) -> int:
     return (file_size + rust_metadata.ED2K_PART_SIZE - 1) // rust_metadata.ED2K_PART_SIZE
 
 
+def _effective_aich_hashset(
+    entry: KnownMetEntry,
+    known2_aich: dict[str, list[str]],
+    size_bytes: int,
+) -> list[str]:
+    if entry.aich_hashset:
+        return entry.aich_hashset
+    if entry.aich_root is None:
+        return []
+    hashset = known2_aich.get(entry.aich_root)
+    if hashset is None:
+        return []
+    if len(hashset) != expected_aich_hash_count(size_bytes):
+        return []
+    return hashset
+
+
 def _read_known_met_record(reader: BinaryReader) -> KnownMetEntry:
     modified_s = reader.u32()
     ed2k_hash = reader.read(16).hex()
@@ -428,6 +544,15 @@ def _read_known_met_record(reader: BinaryReader) -> KnownMetEntry:
     size = _first_tag_value(tags, FT_FILESIZE, int)
     aich_blob = _first_tag_value(tags, FT_AICHHASHSET, bytes)
     aich_root, aich_hashset = _parse_aich_hashset_blob(aich_blob) if aich_blob else (None, [])
+    if aich_root is None:
+        aich_root = _parse_aich_root_tag(_first_tag_value(tags, FT_AICH_HASH, str))
+    upload_priority, auto_upload_priority = _parse_upload_priority(_first_tag_value(tags, FT_ULPRIORITY, int))
+    transferred_low = _first_tag_value(tags, FT_ATTRANSFERRED, int) or 0
+    transferred_hi = _first_tag_value(tags, FT_ATTRANSFERREDHI, int) or 0
+    all_time_uploaded_bytes = (transferred_hi << 32) | transferred_low
+    all_time_upload_requests = _first_tag_value(tags, FT_ATREQUESTED, int) or 0
+    all_time_upload_accepts = _first_tag_value(tags, FT_ATACCEPTED, int) or 0
+    last_request_s = _first_tag_value(tags, LAST_REQUEST_TAG_NAME, int) or 0
     return KnownMetEntry(
         modified_s=modified_s,
         ed2k_hash=ed2k_hash,
@@ -436,7 +561,38 @@ def _read_known_met_record(reader: BinaryReader) -> KnownMetEntry:
         size_bytes=size,
         aich_root=aich_root,
         aich_hashset=aich_hashset,
+        upload_priority=upload_priority,
+        auto_upload_priority=auto_upload_priority,
+        all_time_uploaded_bytes=all_time_uploaded_bytes,
+        all_time_upload_requests=all_time_upload_requests,
+        all_time_upload_accepts=all_time_upload_accepts,
+        last_upload_request_ms=last_request_s * 1000,
     )
+
+
+def _parse_aich_root_tag(value: str | None) -> str | None:
+    if not value:
+        return None
+    raw = value.strip().upper()
+    try:
+        decoded = base64.b32decode(raw + ("=" * ((8 - len(raw) % 8) % 8)))
+    except (binascii.Error, ValueError):
+        return None
+    return decoded.hex() if len(decoded) == 20 else None
+
+
+def _parse_upload_priority(value: int | None) -> tuple[str, bool]:
+    if value == PR_AUTO:
+        return "normal", True
+    if value == PR_VERYLOW:
+        return "verylow", False
+    if value == PR_LOW:
+        return "low", False
+    if value == PR_HIGH:
+        return "high", False
+    if value == PR_VERYHIGH:
+        return "release", False
+    return "normal", False
 
 
 def _read_tag(reader: BinaryReader) -> tuple[int | str, Any]:
