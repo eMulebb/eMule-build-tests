@@ -12,11 +12,12 @@ SERVER_MET_HEADER = 0x0E
 SERVER_MET_HEADER_LARGEFILES = 0xE0
 ST_SERVERNAME = 0x01
 PREFERENCES_DAT_VERSION = 0x14
-DEFAULT_REST_ADDR = "127.0.0.1"
+DEFAULT_REST_ADDR = ""
 DEFAULT_REST_PORT = 58381
 DEFAULT_API_KEY = soak_launch.RUST_API_KEY
 DEFAULT_ED2K_PORT = 4662
 DEFAULT_KAD_PORT = 4672
+DEFAULT_P2P_BIND_INTERFACE = "hide.me"
 
 
 def import_stock_mfc_profile(
@@ -30,6 +31,7 @@ def import_stock_mfc_profile(
     rest_port: int = DEFAULT_REST_PORT,
     api_key: str = DEFAULT_API_KEY,
     p2p_bind_ip: str | None = None,
+    p2p_bind_interface: str | None = DEFAULT_P2P_BIND_INTERFACE,
     ed2k_port: int = DEFAULT_ED2K_PORT,
     kad_port: int = DEFAULT_KAD_PORT,
     dry_run: bool = False,
@@ -68,17 +70,24 @@ def import_stock_mfc_profile(
     servers = parse_server_met(server_met) if server_met.is_file() else []
     kad_endpoints = kad_nodes.load_bootstrap_endpoints(nodes_dat, limit=kad_bootstrap_limit) if nodes_dat.is_file() else []
     user_hash = read_preferences_dat_user_hash(preferences_dat) if import_user_hash and preferences_dat.is_file() else None
-    resolved_p2p_bind_ip = p2p_bind_ip or os.environ.get("X_LOCAL_IP", "").strip() or None
+    resolved_rest_addr = rest_addr.strip() or os.environ.get("X_LOCAL_IP", "").strip()
+    if not resolved_rest_addr:
+        raise RuntimeError("X_LOCAL_IP must be set or --rest-addr supplied for Rust REST binding.")
+    resolved_p2p_bind_ip = p2p_bind_ip.strip() if p2p_bind_ip else None
+    resolved_p2p_bind_interface = p2p_bind_interface.strip() if p2p_bind_interface else None
+    if not resolved_p2p_bind_ip and not resolved_p2p_bind_interface:
+        raise RuntimeError("P2P binding requires --p2p-bind-interface or --p2p-bind-ip.")
 
     if not dry_run:
         rust_metadata.create_metadata_db(rust_repo, metadata_db)
         rust_client.write_rust_profile(
             rust_profile_dir,
             rust_repo=rust_repo,
-            rest_addr=rest_addr,
+            rest_addr=resolved_rest_addr,
             rest_port=rest_port,
             api_key=api_key,
             p2p_bind_ip=resolved_p2p_bind_ip,
+            p2p_bind_interface=resolved_p2p_bind_interface,
             ed2k_port=ed2k_port,
             kad_port=kad_port,
         )
@@ -105,8 +114,9 @@ def import_stock_mfc_profile(
         "rustProfileDir": str(rust_profile_dir),
         "metadataDb": str(metadata_db),
         "profileSettings": str(rust_profile_dir / rust_client.RUST_PROFILE_SETTINGS_FILE),
-        "restBaseUrl": f"http://{rest_addr}:{rest_port}/api/v1",
+        "restBaseUrl": f"http://{resolved_rest_addr}:{rest_port}/api/v1",
         "p2pBindIp": resolved_p2p_bind_ip,
+        "p2pBindInterface": resolved_p2p_bind_interface,
         "ed2kPort": ed2k_port,
         "kadPort": kad_port,
         "sharedRoots": len(seed_roots),

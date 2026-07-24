@@ -20,12 +20,21 @@ def main() -> int:
     parser.add_argument("--rust-profile-dir", type=Path, required=True)
     parser.add_argument("--kad-bootstrap-limit", type=int, default=40)
     parser.add_argument("--import-user-hash", action="store_true")
-    parser.add_argument("--rest-addr", default=mfc_profile_import.DEFAULT_REST_ADDR)
+    parser.add_argument(
+        "--rest-addr",
+        default=mfc_profile_import.DEFAULT_REST_ADDR,
+        help="Rust REST bind address. Defaults to inherited X_LOCAL_IP; loopback is not a live profile default.",
+    )
     parser.add_argument("--rest-port", type=int, default=mfc_profile_import.DEFAULT_REST_PORT)
     parser.add_argument("--api-key", default=mfc_profile_import.DEFAULT_API_KEY)
     parser.add_argument(
         "--p2p-bind-ip",
-        help="Rust daemon P2P bind IP. Defaults to inherited X_LOCAL_IP when set.",
+        help="Rust daemon P2P bind IP override. Normally leave unset and bind P2P through --p2p-bind-interface.",
+    )
+    parser.add_argument(
+        "--p2p-bind-interface",
+        default=mfc_profile_import.DEFAULT_P2P_BIND_INTERFACE,
+        help="Rust daemon P2P bind interface. Defaults to hide.me.",
     )
     parser.add_argument("--ed2k-port", type=int, default=mfc_profile_import.DEFAULT_ED2K_PORT)
     parser.add_argument("--kad-port", type=int, default=mfc_profile_import.DEFAULT_KAD_PORT)
@@ -42,6 +51,7 @@ def main() -> int:
         rest_port=args.rest_port,
         api_key=args.api_key,
         p2p_bind_ip=args.p2p_bind_ip,
+        p2p_bind_interface=args.p2p_bind_interface,
         ed2k_port=args.ed2k_port,
         kad_port=args.kad_port,
         dry_run=args.dry_run,

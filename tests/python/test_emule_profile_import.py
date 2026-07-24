@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import struct
@@ -86,7 +87,8 @@ def _write_nodes_dat(path: Path) -> None:
     path.write_bytes(bytes(data))
 
 
-def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> None:
+def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("X_LOCAL_IP", "192.0.2.10")
     config = tmp_path / "stock-config"
     shared = tmp_path / "shared"
     rust_profile = tmp_path / "rust-profile"
@@ -127,15 +129,23 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
     assert summary["kadBootstrapEndpoints"] == 1
     assert summary["importedUserHash"] is True
     assert summary["hashes"]["importedKnownRecords"] == 1
-    assert summary["restBaseUrl"] == "http://127.0.0.1:58381/api/v1"
+    assert summary["restBaseUrl"] == "http://192.0.2.10:58381/api/v1"
+    assert summary["p2pBindIp"] is None
+    assert summary["p2pBindInterface"] == "hide.me"
     db_path = rust_profile / rust_metadata.RUST_PROFILE_METADATA_FILE
     settings_path = rust_profile / "emulebb-rust-settings.toml"
     assert settings_path.is_file()
-    assert 'bindAddr = "127.0.0.1:58381"' in settings_path.read_text(encoding="utf-8")
+    settings_text = settings_path.read_text(encoding="utf-8")
+    assert 'bindAddr = "192.0.2.10:58381"' in settings_text
+    assert "127." not in settings_text
     with sqlite3.connect(db_path) as conn:
         roots = conn.execute("SELECT count(*) FROM shared_directory_roots WHERE enabled = 1").fetchone()[0]
         servers = conn.execute("SELECT address, port, name FROM servers").fetchall()
         kad = conn.execute("SELECT endpoint FROM kad_bootstrap_endpoints").fetchall()
+        daemon_settings = {
+            key: json.loads(value_json)
+            for key, value_json in conn.execute("SELECT key, value_json FROM settings WHERE section = 'daemon'")
+        }
         identity = conn.execute(
             "SELECT lower(hex(public_identity)) FROM local_identities WHERE identity_kind = 'ed2k-user-hash'"
         ).fetchone()[0]
@@ -150,6 +160,8 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
     assert roots == 1
     assert servers == [("45.82.80.155", 5687, "Local")]
     assert kad == [("1.2.3.4:4672",)]
+    assert daemon_settings.get("p2pBindInterface") == "hide.me"
+    assert "p2pBindIp" not in daemon_settings
     assert identity == "aaaaaaaaaa0eccddeeff001122336f55"
     assert imported == [
         (
@@ -163,6 +175,22 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
         )
     ]
     assert manifests == 0
+
+
+def test_import_stock_mfc_profile_requires_rest_lan_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("X_LOCAL_IP", raising=False)
+    config = tmp_path / "stock-config"
+    rust_profile = tmp_path / "rust-profile"
+    config.mkdir()
+    (config / "shareddir.dat").write_text("C:\\shared\r\n", encoding="utf-16")
+    _write_known_met(config / "known.met", [])
+
+    with pytest.raises(RuntimeError, match="X_LOCAL_IP"):
+        mfc_profile_import.import_stock_mfc_profile(
+            rust_repo=_rust_repo(),
+            emule_config_dir=config,
+            rust_profile_dir=rust_profile,
+        )
 
 
 def test_import_stock_mfc_profile_rejects_existing_non_empty_target(tmp_path: Path) -> None:
