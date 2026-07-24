@@ -1,9 +1,9 @@
-"""Import MFC ``known.met`` shared-file hashes into Rust metadata.
+"""Import MFC ``known.met`` hashes into Rust metadata.
 
 ``known.met`` stores file names, hashes, timestamps, sizes, and upload stats,
-but not directory paths. Profile migration callers should pass candidates from
-MFC's startup cache when they need exact source paths without touching shared
-files.
+but not directory paths. Stock profile migration therefore seeds pathless cache
+rows; Rust associates them with real shared-root files later only after a unique
+``(file name, size, mtime_s)`` match.
 """
 
 from __future__ import annotations
@@ -159,6 +159,103 @@ def parse_known2_64_met(path: Path, wanted_roots: set[str] | None = None) -> dic
                 handle.seek(needed, os.SEEK_CUR)
             index += 1
     return entries
+
+
+def import_mfc_known_met_cache(
+    *,
+    rust_repo: Path,
+    metadata_db: Path,
+    known_met: Path,
+    known2_64_met: Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Import stock ``known.met`` as pathless reusable hash metadata.
+
+    No shared roots are walked and no payload files are inspected. Runtime shared
+    scans promote a cached row only when the exact stock identity is unique.
+    """
+
+    if not dry_run and not metadata_db.exists():
+        rust_metadata.create_metadata_db(rust_repo, metadata_db)
+
+    entries = parse_known_met(known_met)
+    wanted_aich_roots = {
+        entry.aich_root
+        for entry in entries
+        if entry.aich_root is not None
+        and not entry.aich_hashset
+        and entry.name is not None
+        and entry.size_bytes is not None
+        and expected_aich_hash_count(entry.size_bytes) > 0
+        and len(entry.md4_hashset) == expected_md4_hash_count(entry.size_bytes)
+    }
+    known2_aich = (
+        parse_known2_64_met(known2_64_met, wanted_roots=wanted_aich_roots)
+        if wanted_aich_roots and known2_64_met is not None and known2_64_met.is_file()
+        else {}
+    )
+
+    reason_counts = {
+        "missing_identity": 0,
+        "md4_count_mismatch": 0,
+        "aich_count_mismatch": 0,
+    }
+    imported_rows: list[dict[str, Any]] = []
+    known2_aich_used = 0
+    stats_records = 0
+    for entry in entries:
+        if entry.name is None or entry.size_bytes is None:
+            reason_counts["missing_identity"] += 1
+            continue
+        if entry.size_bytes <= 0 or entry.modified_s <= 0:
+            reason_counts["missing_identity"] += 1
+            continue
+        if len(entry.md4_hashset) != expected_md4_hash_count(entry.size_bytes):
+            reason_counts["md4_count_mismatch"] += 1
+            continue
+        aich_hashset = _effective_aich_hashset(entry, known2_aich, entry.size_bytes)
+        if entry.aich_root is not None and not entry.aich_hashset and aich_hashset:
+            known2_aich_used += 1
+        if entry.aich_root is not None and len(aich_hashset) != expected_aich_hash_count(entry.size_bytes):
+            reason_counts["aich_count_mismatch"] += 1
+            continue
+        if (
+            entry.all_time_uploaded_bytes > 0
+            or entry.all_time_upload_requests > 0
+            or entry.all_time_upload_accepts > 0
+            or entry.last_upload_request_ms > 0
+        ):
+            stats_records += 1
+        imported_rows.append(
+            {
+                "ed2k_hash": entry.ed2k_hash,
+                "name": entry.name,
+                "size_bytes": entry.size_bytes,
+                "modified_s": entry.modified_s,
+                "md4_hashset": entry.md4_hashset,
+                "aich_root": entry.aich_root,
+                "aich_hashset": aich_hashset,
+                "upload_priority": entry.upload_priority,
+                "auto_upload_priority": entry.auto_upload_priority,
+                "all_time_uploaded_bytes": entry.all_time_uploaded_bytes,
+                "all_time_upload_requests": entry.all_time_upload_requests,
+                "all_time_upload_accepts": entry.all_time_upload_accepts,
+                "last_upload_request_ms": entry.last_upload_request_ms,
+            }
+        )
+    if imported_rows and not dry_run:
+        rust_metadata.seed_imported_known_files(metadata_db, imported_rows)
+
+    return {
+        "knownMetRecords": len(entries),
+        "importedKnownRecords": len(imported_rows),
+        "known2AichRecords": len(known2_aich),
+        "known2AichUsed": known2_aich_used,
+        "statsRecords": stats_records,
+        "dryRun": dry_run,
+        "skipped": reason_counts,
+        "metadataDb": str(metadata_db),
+    }
 
 
 def import_mfc_known_met_hashes(

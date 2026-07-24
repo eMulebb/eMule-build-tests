@@ -538,6 +538,82 @@ def seed_share_in_place_manifest(
     )
 
 
+def seed_imported_known_files(db_path: Path, rows: list[dict[str, object]]) -> None:
+    """Replace pathless stock ``known.met`` hash-cache rows in a Rust profile."""
+
+    now = _now_ms()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("DELETE FROM imported_known_files")
+        for row in rows:
+            ed2k_hash = _required_hex(row, "ed2k_hash", 16)
+            name = str(row.get("name") or "").strip()
+            size_bytes = int(row.get("size_bytes") or 0)
+            modified_s = int(row.get("modified_s") or 0)
+            if not name:
+                raise ValueError("imported known row requires name")
+            if size_bytes <= 0:
+                raise ValueError("imported known row requires positive size_bytes")
+            if modified_s <= 0:
+                raise ValueError("imported known row requires positive modified_s")
+            aich_root = row.get("aich_root")
+            conn.execute(
+                """
+                INSERT INTO imported_known_files(
+                    ed2k_hash, display_name, size_bytes, modified_s, aich_root,
+                    upload_priority, auto_upload_priority, all_time_uploaded_bytes,
+                    all_time_upload_requests, all_time_upload_accepts,
+                    last_upload_request_ms, imported_at_ms
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ed2k_hash,
+                    name,
+                    size_bytes,
+                    modified_s,
+                    bytes.fromhex(str(aich_root)) if aich_root else None,
+                    str(row.get("upload_priority") or "normal"),
+                    1 if bool(row.get("auto_upload_priority")) else 0,
+                    int(row.get("all_time_uploaded_bytes") or 0),
+                    int(row.get("all_time_upload_requests") or 0),
+                    int(row.get("all_time_upload_accepts") or 0),
+                    int(row.get("last_upload_request_ms") or 0),
+                    now,
+                ),
+            )
+            imported_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            for part_index, md4_hash in enumerate(row.get("md4_hashset") or []):
+                conn.execute(
+                    """
+                    INSERT INTO imported_known_file_md4_hashes(
+                        imported_known_file_id, part_index, md4_hash
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (imported_id, part_index, bytes.fromhex(str(md4_hash))),
+                )
+            for part_index, aich_hash in enumerate(row.get("aich_hashset") or []):
+                conn.execute(
+                    """
+                    INSERT INTO imported_known_file_aich_hashes(
+                        imported_known_file_id, part_index, aich_hash
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (imported_id, part_index, bytes.fromhex(str(aich_hash))),
+                )
+        conn.commit()
+
+
+def _required_hex(row: dict[str, object], key: str, byte_len: int) -> bytes:
+    value = str(row.get(key) or "")
+    raw = bytes.fromhex(value)
+    if len(raw) != byte_len:
+        raise ValueError(f"{key} must be {byte_len} bytes of hex")
+    return raw
+
+
 def seed_share_in_place_manifests(
     db_path: Path,
     manifests: list[dict[str, object]],

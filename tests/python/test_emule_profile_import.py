@@ -86,29 +86,6 @@ def _write_nodes_dat(path: Path) -> None:
     path.write_bytes(bytes(data))
 
 
-def _startup_cache_string(value: str) -> bytes:
-    raw = value.encode("utf-16-le")
-    return struct.pack("<I", len(value)) + raw
-
-
-def _write_sharedcache_dat(path: Path, directory: Path, leaf_name: str, modified_s: int, size_bytes: int) -> None:
-    path.write_bytes(
-        struct.pack("<IH", mfc_profile_import.SHARED_STARTUP_CACHE_MAGIC, mfc_profile_import.SHARED_STARTUP_CACHE_VERSION)
-        + struct.pack("<I", 0)
-        + struct.pack("<I", 1)
-        + _startup_cache_string(str(directory))
-        + bytes([0, 0])
-        + struct.pack("<Q", 0)
-        + (b"\x00" * mfc_profile_import.FILE_ID_BYTES)
-        + struct.pack("<QB", 0, 0)
-        + _startup_cache_string("")
-        + (b"\x00" * mfc_profile_import.USN_FILE_REFERENCE_BYTES)
-        + struct.pack("<I", 1)
-        + _startup_cache_string(leaf_name)
-        + struct.pack("<QQ", modified_s, size_bytes)
-    )
-
-
 def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> None:
     config = tmp_path / "stock-config"
     shared = tmp_path / "shared"
@@ -120,7 +97,6 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
     modified_s = 1_700_000_000
     os.utime(payload, (modified_s, modified_s))
     (config / "shareddir.dat").write_text(str(shared) + "\r\n", encoding="utf-16")
-    _write_sharedcache_dat(config / "sharedcache.dat", shared, payload.name, modified_s, payload.stat().st_size)
     _write_known_met(
         config / "known.met",
         [
@@ -147,18 +123,15 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
 
     assert summary["sharedRoots"] == 1
     assert summary["accessibleSharedRoots"] == 1
-    assert summary["sharedCacheCandidates"] == 1
     assert summary["servers"] == 1
     assert summary["kadBootstrapEndpoints"] == 1
     assert summary["importedUserHash"] is True
-    assert summary["hashes"]["importedRecords"] == 1
+    assert summary["hashes"]["importedKnownRecords"] == 1
+    assert summary["restBaseUrl"] == "http://127.0.0.1:58381/api/v1"
     db_path = rust_profile / rust_metadata.RUST_PROFILE_METADATA_FILE
-    manifest = rust_metadata.read_transfer_manifest(db_path, "00112233445566778899aabbccddeeff")
-    assert manifest is not None
-    assert manifest["source_path"] == str(payload)
-    assert manifest["all_time_uploaded_bytes"] == 1234
-    assert manifest["all_time_upload_requests"] == 9
-    assert manifest["all_time_upload_accepts"] == 4
+    settings_path = rust_profile / "emulebb-rust-settings.toml"
+    assert settings_path.is_file()
+    assert 'bindAddr = "127.0.0.1:58381"' in settings_path.read_text(encoding="utf-8")
     with sqlite3.connect(db_path) as conn:
         roots = conn.execute("SELECT count(*) FROM shared_directory_roots WHERE enabled = 1").fetchone()[0]
         servers = conn.execute("SELECT address, port, name FROM servers").fetchall()
@@ -166,10 +139,30 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
         identity = conn.execute(
             "SELECT lower(hex(public_identity)) FROM local_identities WHERE identity_kind = 'ed2k-user-hash'"
         ).fetchone()[0]
+        imported = conn.execute(
+            """
+            SELECT lower(hex(ed2k_hash)), display_name, size_bytes, modified_s,
+                   all_time_uploaded_bytes, all_time_upload_requests, all_time_upload_accepts
+            FROM imported_known_files
+            """
+        ).fetchall()
+        manifests = conn.execute("SELECT count(*) FROM transfers").fetchone()[0]
     assert roots == 1
     assert servers == [("45.82.80.155", 5687, "Local")]
     assert kad == [("1.2.3.4:4672",)]
     assert identity == "aaaaaaaaaa0eccddeeff001122336f55"
+    assert imported == [
+        (
+            "00112233445566778899aabbccddeeff",
+            payload.name,
+            payload.stat().st_size,
+            modified_s,
+            1234,
+            9,
+            4,
+        )
+    ]
+    assert manifests == 0
 
 
 def test_import_stock_mfc_profile_rejects_existing_non_empty_target(tmp_path: Path) -> None:
@@ -196,28 +189,50 @@ def test_parse_server_met_rejects_trailing_bytes(tmp_path: Path) -> None:
         mfc_profile_import.parse_server_met(server_met)
 
 
-def test_load_recursive_roots_prefers_monitored_roots(tmp_path: Path) -> None:
+def test_load_recursive_roots_ignores_non_stock_monitored_sidecars(tmp_path: Path) -> None:
     config = tmp_path / "stock-config"
     config.mkdir()
     (config / "shareddir.dat").write_text("C:\\many\\one\r\nC:\\many\\two\r\n", encoding="utf-16")
     (config / "shareddir.monitored.dat").write_text("F:\\SharedRoot\r\n", encoding="utf-16")
 
-    roots = mfc_profile_import._load_recursive_root_entries(config)
+    roots = mfc_profile_import._load_recursive_root_entries(config / "shareddir.dat")
 
-    assert roots == [{"path": "F:\\SharedRoot\\", "recursive": True}]
+    assert roots == [
+        {"path": "C:\\many\\one\\", "recursive": True},
+        {"path": "C:\\many\\two\\", "recursive": True},
+    ]
 
 
-def test_load_sharedcache_candidates_does_not_require_files(tmp_path: Path) -> None:
-    cache = tmp_path / "sharedcache.dat"
-    _write_sharedcache_dat(cache, Path("F:/Deep/Tree"), "Known.bin", 1_700_000_000, 123)
+def test_load_recursive_roots_collapses_fully_listed_directory_tree(tmp_path: Path) -> None:
+    config = tmp_path / "stock-config"
+    root = tmp_path / "MORE_SHR" / "mp3-albums"
+    one = root / "artist-one"
+    two = root / "artist-two"
+    (one / "disc").mkdir(parents=True)
+    two.mkdir(parents=True)
+    config.mkdir()
+    (config / "shareddir.dat").write_text(
+        "\r\n".join(str(path) for path in [one, one / "disc", two]) + "\r\n",
+        encoding="utf-16",
+    )
 
-    candidates = mfc_profile_import.load_sharedcache_candidates(cache)
+    roots = mfc_profile_import._load_recursive_root_entries(config / "shareddir.dat")
 
-    assert candidates == [
-        mfc_known_met.SharedFileCandidate(
-            path=Path("F:/Deep/Tree/Known.bin"),
-            size_bytes=123,
-            mtime_s=1_700_000_000,
-            mtime_ms=1_700_000_000_000,
-        )
+    assert roots == [{"path": str(root) + "\\", "recursive": True}]
+
+
+def test_load_recursive_roots_keeps_exact_dirs_when_tree_cannot_be_proved(tmp_path: Path) -> None:
+    config = tmp_path / "stock-config"
+    root = tmp_path / "shared"
+    one = root / "one"
+    missing = root / "missing"
+    one.mkdir(parents=True)
+    config.mkdir()
+    (config / "shareddir.dat").write_text(f"{one}\r\n{missing}\r\n", encoding="utf-16")
+
+    roots = mfc_profile_import._load_recursive_root_entries(config / "shareddir.dat")
+
+    assert roots == [
+        {"path": str(one) + "\\", "recursive": True},
+        {"path": str(missing) + "\\", "recursive": True},
     ]

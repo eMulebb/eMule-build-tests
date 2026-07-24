@@ -191,6 +191,56 @@ def test_import_known_met_uses_known2_aich_hashset(tmp_path: Path) -> None:
     assert manifest["aich_hashset"] == ["bb" * 20, "cc" * 20]
 
 
+def test_import_known_met_cache_seeds_pathless_rows_without_shared_files(tmp_path: Path) -> None:
+    known_met = tmp_path / "known.met"
+    _write_known_met(
+        known_met,
+        [
+            _known_record(
+                modified_s=1_700_000_000,
+                ed2k_hash="00112233445566778899aabbccddeeff",
+                name="MissingOnDisk.bin",
+                size_bytes=123,
+                all_time_uploaded_bytes=456,
+                all_time_upload_requests=7,
+                all_time_upload_accepts=3,
+            )
+        ],
+    )
+    db_path = tmp_path / "metadata.sqlite"
+    rust_metadata.create_metadata_db(_rust_repo(), db_path)
+
+    summary = mfc_known_met.import_mfc_known_met_cache(
+        rust_repo=_rust_repo(),
+        metadata_db=db_path,
+        known_met=known_met,
+    )
+
+    assert summary["importedKnownRecords"] == 1
+    assert summary["skipped"]["missing_identity"] == 0
+    with sqlite3.connect(db_path) as conn:
+        imported = conn.execute(
+            """
+            SELECT lower(hex(ed2k_hash)), display_name, size_bytes, modified_s,
+                   all_time_uploaded_bytes, all_time_upload_requests, all_time_upload_accepts
+            FROM imported_known_files
+            """
+        ).fetchall()
+        transfers = conn.execute("SELECT count(*) FROM transfers").fetchone()[0]
+    assert imported == [
+        (
+            "00112233445566778899aabbccddeeff",
+            "MissingOnDisk.bin",
+            123,
+            1_700_000_000,
+            456,
+            7,
+            3,
+        )
+    ]
+    assert transfers == 0
+
+
 def test_import_known_met_seeds_share_in_place_manifest(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     shared.mkdir()
