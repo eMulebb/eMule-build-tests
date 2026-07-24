@@ -86,6 +86,29 @@ def _write_nodes_dat(path: Path) -> None:
     path.write_bytes(bytes(data))
 
 
+def _startup_cache_string(value: str) -> bytes:
+    raw = value.encode("utf-16-le")
+    return struct.pack("<I", len(value)) + raw
+
+
+def _write_sharedcache_dat(path: Path, directory: Path, leaf_name: str, modified_s: int, size_bytes: int) -> None:
+    path.write_bytes(
+        struct.pack("<IH", mfc_profile_import.SHARED_STARTUP_CACHE_MAGIC, mfc_profile_import.SHARED_STARTUP_CACHE_VERSION)
+        + struct.pack("<I", 0)
+        + struct.pack("<I", 1)
+        + _startup_cache_string(str(directory))
+        + bytes([0, 0])
+        + struct.pack("<Q", 0)
+        + (b"\x00" * mfc_profile_import.FILE_ID_BYTES)
+        + struct.pack("<QB", 0, 0)
+        + _startup_cache_string("")
+        + (b"\x00" * mfc_profile_import.USN_FILE_REFERENCE_BYTES)
+        + struct.pack("<I", 1)
+        + _startup_cache_string(leaf_name)
+        + struct.pack("<QQ", modified_s, size_bytes)
+    )
+
+
 def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> None:
     config = tmp_path / "stock-config"
     shared = tmp_path / "shared"
@@ -97,6 +120,7 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
     modified_s = 1_700_000_000
     os.utime(payload, (modified_s, modified_s))
     (config / "shareddir.dat").write_text(str(shared) + "\r\n", encoding="utf-16")
+    _write_sharedcache_dat(config / "sharedcache.dat", shared, payload.name, modified_s, payload.stat().st_size)
     _write_known_met(
         config / "known.met",
         [
@@ -122,6 +146,8 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path) -> 
     )
 
     assert summary["sharedRoots"] == 1
+    assert summary["accessibleSharedRoots"] == 1
+    assert summary["sharedCacheCandidates"] == 1
     assert summary["servers"] == 1
     assert summary["kadBootstrapEndpoints"] == 1
     assert summary["importedUserHash"] is True
@@ -168,3 +194,30 @@ def test_parse_server_met_rejects_trailing_bytes(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="trailing bytes"):
         mfc_profile_import.parse_server_met(server_met)
+
+
+def test_load_recursive_roots_prefers_monitored_roots(tmp_path: Path) -> None:
+    config = tmp_path / "stock-config"
+    config.mkdir()
+    (config / "shareddir.dat").write_text("C:\\many\\one\r\nC:\\many\\two\r\n", encoding="utf-16")
+    (config / "shareddir.monitored.dat").write_text("F:\\SharedRoot\r\n", encoding="utf-16")
+
+    roots = mfc_profile_import._load_recursive_root_entries(config)
+
+    assert roots == [{"path": "F:\\SharedRoot\\", "recursive": True}]
+
+
+def test_load_sharedcache_candidates_does_not_require_files(tmp_path: Path) -> None:
+    cache = tmp_path / "sharedcache.dat"
+    _write_sharedcache_dat(cache, Path("F:/Deep/Tree"), "Known.bin", 1_700_000_000, 123)
+
+    candidates = mfc_profile_import.load_sharedcache_candidates(cache)
+
+    assert candidates == [
+        mfc_known_met.SharedFileCandidate(
+            path=Path("F:/Deep/Tree/Known.bin"),
+            size_bytes=123,
+            mtime_s=1_700_000_000,
+            mtime_ms=1_700_000_000_000,
+        )
+    ]

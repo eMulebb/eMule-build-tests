@@ -1,10 +1,9 @@
 """Import MFC ``known.met`` shared-file hashes into Rust metadata.
 
-``known.met`` does not store source paths, so imports are deliberately
-conservative: a record is imported only when a scan of the configured shared
-roots finds exactly one file with the same basename, byte size, and whole-second
-mtime as the MFC record. The Rust row stores the actual scanned mtime in
-milliseconds so the normal share-in-place reload skip can avoid hashing later.
+``known.met`` stores file names, hashes, timestamps, sizes, and upload stats,
+but not directory paths. Profile migration callers should pass candidates from
+MFC's startup cache when they need exact source paths without touching shared
+files.
 """
 
 from __future__ import annotations
@@ -127,25 +126,38 @@ def parse_known_met(path: Path) -> list[KnownMetEntry]:
     return entries
 
 
-def parse_known2_64_met(path: Path) -> dict[str, list[str]]:
+def parse_known2_64_met(path: Path, wanted_roots: set[str] | None = None) -> dict[str, list[str]]:
     """Parse stock ``known2_64.met`` into AICH root -> part hashes."""
 
-    reader = BinaryReader(path.read_bytes())
-    version = reader.u8()
-    if version != KNOWN2_MET_VERSION:
-        raise ValueError(f"unsupported known2_64.met header 0x{version:02x}")
     entries: dict[str, list[str]] = {}
-    index = 0
-    while reader.remaining() > 0:
-        if reader.remaining() < 24:
-            raise ValueError(f"truncated known2_64.met record {index}")
-        root = reader.read(20).hex()
-        hash_count = reader.u32()
-        needed = hash_count * 20
-        if reader.remaining() < needed:
-            raise ValueError(f"known2_64.met record {index} declares {hash_count} hashes past EOF")
-        entries[root] = [reader.read(20).hex() for _ in range(hash_count)]
-        index += 1
+    with path.open("rb") as handle:
+        version_raw = handle.read(1)
+        if len(version_raw) != 1:
+            raise ValueError("truncated known2_64.met")
+        version = version_raw[0]
+        if version != KNOWN2_MET_VERSION:
+            raise ValueError(f"unsupported known2_64.met header 0x{version:02x}")
+        index = 0
+        while True:
+            root_raw = handle.read(20)
+            if not root_raw:
+                break
+            if len(root_raw) != 20:
+                raise ValueError(f"truncated known2_64.met record {index}")
+            count_raw = handle.read(4)
+            if len(count_raw) != 4:
+                raise ValueError(f"truncated known2_64.met record {index}")
+            root = root_raw.hex()
+            hash_count = int.from_bytes(count_raw, "little")
+            needed = hash_count * 20
+            if wanted_roots is None or root in wanted_roots:
+                payload = handle.read(needed)
+                if len(payload) != needed:
+                    raise ValueError(f"known2_64.met record {index} declares {hash_count} hashes past EOF")
+                entries[root] = [payload[offset : offset + 20].hex() for offset in range(0, needed, 20)]
+            else:
+                handle.seek(needed, os.SEEK_CUR)
+            index += 1
     return entries
 
 
@@ -156,14 +168,17 @@ def import_mfc_known_met_hashes(
     known_met: Path,
     known2_64_met: Path | None = None,
     shared_roots: list[object],
+    shared_file_candidates: list[SharedFileCandidate] | None = None,
+    scan_shared_roots: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     if not dry_run and not metadata_db.exists():
         rust_metadata.create_metadata_db(rust_repo, metadata_db)
 
     entries = parse_known_met(known_met)
-    known2_aich = parse_known2_64_met(known2_64_met) if known2_64_met is not None and known2_64_met.is_file() else {}
-    candidates = scan_shared_file_candidates(shared_roots)
+    candidates = shared_file_candidates if shared_file_candidates is not None else []
+    if scan_shared_roots:
+        candidates = candidates + scan_shared_file_candidates(shared_roots)
     by_key: dict[tuple[str, int, int], list[SharedFileCandidate]] = {}
     for candidate in candidates:
         by_key.setdefault(
@@ -174,6 +189,23 @@ def import_mfc_known_met_hashes(
             ),
             [],
         ).append(candidate)
+
+    wanted_aich_roots = {
+        entry.aich_root
+        for entry in entries
+        if entry.aich_root is not None
+        and not entry.aich_hashset
+        and entry.name is not None
+        and entry.size_bytes is not None
+        and expected_aich_hash_count(entry.size_bytes) > 0
+        and len(entry.md4_hashset) == expected_md4_hash_count(entry.size_bytes)
+        and by_key.get((entry.name.casefold(), entry.size_bytes, entry.modified_s))
+    }
+    known2_aich = (
+        parse_known2_64_met(known2_64_met, wanted_roots=wanted_aich_roots)
+        if wanted_aich_roots and known2_64_met is not None and known2_64_met.is_file()
+        else {}
+    )
 
     reason_counts = {
         "missing_identity": 0,
@@ -256,6 +288,7 @@ def import_mfc_known_met_hashes(
     return {
         "knownMetRecords": len(entries),
         "sharedFilesScanned": len(candidates),
+        "sharedFileCandidateSource": "scan" if scan_shared_roots else ("startup-cache" if shared_file_candidates is not None else "none"),
         "matchedRecords": matched,
         "duplicateRecords": duplicate_records,
         "known2AichRecords": len(known2_aich),

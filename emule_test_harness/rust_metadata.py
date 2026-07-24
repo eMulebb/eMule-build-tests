@@ -549,6 +549,10 @@ def seed_share_in_place_manifests(
     now = _now_ms()
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
+        if not seed_piece_rows:
+            _seed_share_in_place_manifests_fast_conn(conn, now=now, manifests=manifests)
+            conn.commit()
+            return
         for manifest in manifests:
             _seed_share_in_place_manifest_conn(
                 conn,
@@ -557,6 +561,179 @@ def seed_share_in_place_manifests(
                 **manifest,
             )
         conn.commit()
+
+
+def _seed_share_in_place_manifests_fast_conn(
+    conn: sqlite3.Connection,
+    *,
+    now: int,
+    manifests: list[dict[str, object]],
+) -> None:
+    """Bulk seed completed share-in-place manifests for fresh migration profiles."""
+
+    platform = current_platform()
+    path_rows = []
+    known_rows = []
+    transfer_rows = []
+    source_rows = []
+    range_rows = []
+    md4_rows = []
+    aich_rows = []
+
+    for manifest in manifests:
+        source_path = str(manifest["source_path"])
+        normalized_key = normalize_path_key(source_path)
+        path_rows.append((source_path, source_path.encode(), source_path, normalized_key, platform, now))
+
+    conn.executemany(
+        """
+        INSERT INTO local_paths(
+            display_path, native_path, canonical_display_path, normalized_key,
+            platform, last_stat_ms
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(platform, normalized_key) DO UPDATE SET
+            display_path = excluded.display_path,
+            native_path = excluded.native_path,
+            canonical_display_path = excluded.canonical_display_path,
+            last_stat_ms = excluded.last_stat_ms
+        """,
+        path_rows,
+    )
+    path_ids = {
+        row[1]: row[0]
+        for row in conn.execute(
+            "SELECT id, normalized_key FROM local_paths WHERE platform = ?",
+            (platform,),
+        )
+    }
+
+    for manifest in manifests:
+        ed2k_hash = str(manifest["ed2k_hash"])
+        size_bytes = int(manifest["size_bytes"])
+        piece_count = (size_bytes + ED2K_PART_SIZE - 1) // ED2K_PART_SIZE if size_bytes else 0
+        aich_root = manifest.get("aich_root")
+        known_rows.append(
+            (
+                bytes.fromhex(ed2k_hash),
+                size_bytes,
+                str(manifest["name"]),
+                ED2K_PART_SIZE,
+                piece_count,
+                1 if aich_root is not None else 0,
+                bytes.fromhex(str(aich_root)) if aich_root else None,
+                str(manifest.get("upload_priority", "normal")),
+                1 if manifest.get("auto_upload_priority", False) else 0,
+                int(manifest.get("all_time_uploaded_bytes", 0)),
+                int(manifest.get("all_time_upload_requests", 0)),
+                int(manifest.get("all_time_upload_accepts", 0)),
+                int(manifest.get("last_upload_request_ms", 0)),
+                now,
+                now,
+                now,
+            )
+        )
+    conn.executemany(
+        """
+        INSERT INTO known_files(
+            ed2k_hash, size_bytes, display_name, part_size, part_count,
+            completed, md4_hashset_acquired, aich_hashset_acquired, aich_root,
+            upload_priority, auto_upload_priority, all_time_uploaded_bytes,
+            all_time_upload_requests, all_time_upload_accepts,
+            last_upload_request_ms, first_seen_ms, last_seen_ms, updated_at_ms
+        )
+        VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ed2k_hash) DO UPDATE SET
+            size_bytes = excluded.size_bytes,
+            display_name = excluded.display_name,
+            part_size = excluded.part_size,
+            part_count = excluded.part_count,
+            completed = excluded.completed,
+            md4_hashset_acquired = excluded.md4_hashset_acquired,
+            aich_hashset_acquired = excluded.aich_hashset_acquired,
+            aich_root = excluded.aich_root,
+            upload_priority = excluded.upload_priority,
+            auto_upload_priority = excluded.auto_upload_priority,
+            all_time_uploaded_bytes = excluded.all_time_uploaded_bytes,
+            all_time_upload_requests = excluded.all_time_upload_requests,
+            all_time_upload_accepts = excluded.all_time_upload_accepts,
+            last_upload_request_ms = excluded.last_upload_request_ms,
+            last_seen_ms = excluded.last_seen_ms,
+            updated_at_ms = excluded.updated_at_ms
+        """,
+        known_rows,
+    )
+    known_ids = {row[1]: row[0] for row in conn.execute("SELECT id, lower(hex(ed2k_hash)) FROM known_files")}
+
+    for manifest in manifests:
+        ed2k_hash = str(manifest["ed2k_hash"])
+        known_file_id = known_ids[ed2k_hash]
+        path_id = path_ids[normalize_path_key(str(manifest["source_path"]))]
+        size_bytes = int(manifest["size_bytes"])
+        source_mtime_ms = int(manifest["source_mtime_ms"])
+        transfer_rows.append((known_file_id, ed2k_hash, path_id, source_mtime_ms, now, now, now))
+        source_rows.append((known_file_id, path_id, size_bytes, source_mtime_ms, now, now))
+        range_rows.append((known_file_id, size_bytes, now))
+        for index, part_hash in enumerate(manifest.get("md4_hashset", []) or []):
+            md4_rows.append((known_file_id, index, bytes.fromhex(str(part_hash))))
+        for index, part_hash in enumerate(manifest.get("aich_hashset", []) or []):
+            aich_rows.append((known_file_id, index, bytes.fromhex(str(part_hash))))
+
+    conn.executemany(
+        """
+        INSERT INTO transfers(
+            known_file_id, visible_state, download_priority, payload_directory,
+            source_path_id, source_mtime_ms, created_at_ms, updated_at_ms, completed_at_ms
+        )
+        VALUES (?, 'completed', 'normal', ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(known_file_id) DO UPDATE SET
+            visible_state = excluded.visible_state,
+            download_priority = excluded.download_priority,
+            payload_directory = excluded.payload_directory,
+            source_path_id = excluded.source_path_id,
+            source_mtime_ms = excluded.source_mtime_ms,
+            updated_at_ms = excluded.updated_at_ms,
+            completed_at_ms = excluded.completed_at_ms,
+            removed_at_ms = NULL
+        """,
+        transfer_rows,
+    )
+    conn.executemany(
+        """
+        INSERT INTO shared_file_sources(
+            known_file_id, path_id, file_size, source_mtime_ms,
+            created_at_ms, updated_at_ms
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(path_id) DO UPDATE SET
+            known_file_id = excluded.known_file_id,
+            file_size = excluded.file_size,
+            source_mtime_ms = excluded.source_mtime_ms,
+            updated_at_ms = excluded.updated_at_ms
+        """,
+        source_rows,
+    )
+    conn.executemany(
+        "DELETE FROM shared_file_scan_failures WHERE path_id = ?",
+        [(row[1],) for row in source_rows],
+    )
+    if md4_rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO ed2k_part_hashes(known_file_id, part_index, md4_hash) VALUES (?, ?, ?)",
+            md4_rows,
+        )
+    if aich_rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO aich_part_hashes(known_file_id, part_index, aich_hash) VALUES (?, ?, ?)",
+            aich_rows,
+        )
+    conn.executemany(
+        """
+        INSERT INTO verified_ranges(known_file_id, start_offset, end_offset, created_at_ms)
+        VALUES (?, 0, ?, ?)
+        """,
+        range_rows,
+    )
 
 
 def seed_shared_directory_roots(db_path: Path, roots: list[dict[str, Any]]) -> None:

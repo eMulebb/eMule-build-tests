@@ -20,6 +20,11 @@ def main() -> int:
     parser.add_argument("--rust-profile-dir", type=Path, required=True)
     parser.add_argument("--kad-bootstrap-limit", type=int, default=40)
     parser.add_argument("--import-user-hash", action="store_true")
+    parser.add_argument(
+        "--scan-shared-roots",
+        action="store_true",
+        help="Fallback to walking shared roots when sharedcache.dat has no matching path data.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -29,6 +34,7 @@ def main() -> int:
         rust_profile_dir=args.rust_profile_dir,
         kad_bootstrap_limit=args.kad_bootstrap_limit,
         import_user_hash=args.import_user_hash,
+        scan_shared_roots=args.scan_shared_roots,
         dry_run=args.dry_run,
     )
     print(mfc_known_met.summary_json(summary))
