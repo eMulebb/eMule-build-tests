@@ -18,7 +18,7 @@ from .paths import get_required_emule_workspace_root, get_workspace_output_root
 
 FROM_SCHEMA_VERSION = 15
 V16_SCHEMA_VERSION = 16
-TO_SCHEMA_VERSION = 17
+V17_SCHEMA_VERSION = 17
 SCHEMA = "emulebb-build-tests.rust-soak-metadata-migration.v1"
 SHARED_ROOT_COLUMNS = (
     "id",
@@ -63,7 +63,12 @@ def default_rust_repo() -> Path:
 
 
 def default_metadata_db() -> Path:
-    return get_workspace_output_root() / "soak" / "rust-runtime" / rust_metadata.RUST_PROFILE_METADATA_FILE
+    return (
+        get_workspace_output_root()
+        / "soak"
+        / "rust-runtime"
+        / rust_metadata.RUST_PROFILE_METADATA_FILE
+    )
 
 
 def schema_marker(db_path: Path, schema_id: str) -> int | None:
@@ -86,13 +91,19 @@ def extract_create_table(schema_sql: str, table: str) -> str:
         raise RuntimeError(f"current Rust schema does not define {table}")
     end = schema_sql.find("\n);", start)
     if end < 0:
-        raise RuntimeError(f"current Rust schema table definition is truncated for {table}")
+        raise RuntimeError(
+            f"current Rust schema table definition is truncated for {table}"
+        )
     return schema_sql[start : end + 3]
 
 
 def current_shared_roots_table_sql(rust_repo: Path, table_name: str) -> str:
-    ddl = extract_create_table(rust_metadata._schema_sql(rust_repo), "shared_directory_roots")
-    return ddl.replace("CREATE TABLE shared_directory_roots", f"CREATE TABLE {table_name}", 1)
+    ddl = extract_create_table(
+        rust_metadata._schema_sql(rust_repo), "shared_directory_roots"
+    )
+    return ddl.replace(
+        "CREATE TABLE shared_directory_roots", f"CREATE TABLE {table_name}", 1
+    )
 
 
 def backup_database(db_path: Path, backup_dir: Path | None, label: str) -> Path:
@@ -127,7 +138,9 @@ def migrate_v15_to_v16(
         if before_version is None:
             raise RuntimeError(f"metadata_schema row is missing for {schema_id}")
         columns = table_columns(conn, "shared_directory_roots")
-        row_count = int(conn.execute("SELECT count(*) FROM shared_directory_roots").fetchone()[0])
+        row_count = int(
+            conn.execute("SELECT count(*) FROM shared_directory_roots").fetchone()[0]
+        )
 
     if before_version >= V16_SCHEMA_VERSION and "recursive" not in columns:
         return {
@@ -182,7 +195,9 @@ def migrate_v15_to_v16(
             conn.execute("PRAGMA foreign_keys = ON")
         fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_issues:
-            raise RuntimeError(f"foreign key check failed after migration: {fk_issues[:5]}")
+            raise RuntimeError(
+                f"foreign key check failed after migration: {fk_issues[:5]}"
+            )
         after_columns = table_columns(conn, "shared_directory_roots")
         after_version = schema_marker(db_path, schema_id)
 
@@ -205,6 +220,23 @@ def current_known_files_table_sql(rust_repo: Path, table_name: str) -> str:
     return ddl.replace("CREATE TABLE known_files", f"CREATE TABLE {table_name}", 1)
 
 
+def current_imported_known_files_sql(rust_repo: Path) -> str:
+    schema_sql = rust_metadata._schema_sql(rust_repo)
+    start_token = "CREATE TABLE imported_known_files ("
+    end_token = "CREATE TABLE verified_ranges ("
+    start = schema_sql.find(start_token)
+    end = schema_sql.find(end_token, start)
+    if start < 0 or end < 0:
+        raise RuntimeError(
+            "current Rust schema does not define imported known-file tables"
+        )
+    return (
+        schema_sql[start:end]
+        .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+        .replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ")
+    )
+
+
 def known_files_allows_not_published(conn: sqlite3.Connection) -> bool:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'known_files'"
@@ -225,8 +257,10 @@ def migrate_v16_to_v17(
         raise RuntimeError(f"metadata database does not exist: {db_path}")
 
     schema_id, current_version = rust_metadata._schema_marker(rust_repo)
-    if current_version != TO_SCHEMA_VERSION:
-        raise RuntimeError(f"this migration targets Rust schema {TO_SCHEMA_VERSION}; current schema is {current_version}")
+    if current_version < V17_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"this migration requires Rust schema {V17_SCHEMA_VERSION}+; current schema is {current_version}"
+        )
 
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
         before_version = schema_marker(db_path, schema_id)
@@ -236,10 +270,10 @@ def migrate_v16_to_v17(
         row_count = int(conn.execute("SELECT count(*) FROM known_files").fetchone()[0])
         already_allows = known_files_allows_not_published(conn)
 
-    if before_version == TO_SCHEMA_VERSION and already_allows:
+    if before_version >= V17_SCHEMA_VERSION and already_allows:
         return {
             "schema": SCHEMA,
-            "action": "noop-current",
+            "action": "noop-v17-shape-current",
             "metadataDb": str(db_path),
             "schemaId": schema_id,
             "schemaVersion": before_version,
@@ -257,7 +291,7 @@ def migrate_v16_to_v17(
             "metadataDb": str(db_path),
             "schemaId": schema_id,
             "fromSchemaVersion": V16_SCHEMA_VERSION,
-            "toSchemaVersion": TO_SCHEMA_VERSION,
+            "toSchemaVersion": V17_SCHEMA_VERSION,
             "knownFiles": row_count,
         }
 
@@ -277,10 +311,12 @@ def migrate_v16_to_v17(
             )
             conn.execute("DROP TABLE known_files")
             conn.execute(f"ALTER TABLE {temp_table} RENAME TO known_files")
-            conn.execute("CREATE INDEX IF NOT EXISTS known_files_hash_idx ON known_files(ed2k_hash)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS known_files_hash_idx ON known_files(ed2k_hash)"
+            )
             conn.execute(
                 "UPDATE metadata_schema SET schema_version = ? WHERE schema_id = ?",
-                (TO_SCHEMA_VERSION, schema_id),
+                (V17_SCHEMA_VERSION, schema_id),
             )
             conn.commit()
         except Exception:
@@ -290,7 +326,9 @@ def migrate_v16_to_v17(
             conn.execute("PRAGMA foreign_keys = ON")
         fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_issues:
-            raise RuntimeError(f"foreign key check failed after migration: {fk_issues[:5]}")
+            raise RuntimeError(
+                f"foreign key check failed after migration: {fk_issues[:5]}"
+            )
         after_version = schema_marker(db_path, schema_id)
         after_allows = known_files_allows_not_published(conn)
 
@@ -324,6 +362,17 @@ def migrate_to_current(
     original_version = before_version
     steps: list[dict[str, object]] = []
 
+    if before_version == current_version:
+        return {
+            "schema": SCHEMA,
+            "action": "noop-current",
+            "metadataDb": str(db_path),
+            "schemaId": schema_id,
+            "fromSchemaVersion": original_version,
+            "toSchemaVersion": current_version,
+            "steps": steps,
+        }
+
     if before_version == FROM_SCHEMA_VERSION:
         result = migrate_v15_to_v16(
             db_path=db_path,
@@ -344,7 +393,7 @@ def migrate_to_current(
             }
         before_version = schema_marker(db_path, schema_id)
 
-    if before_version in (V16_SCHEMA_VERSION, TO_SCHEMA_VERSION):
+    if before_version in (V16_SCHEMA_VERSION, V17_SCHEMA_VERSION):
         result = migrate_v16_to_v17(
             db_path=db_path,
             rust_repo=rust_repo,
@@ -357,10 +406,52 @@ def migrate_to_current(
             f"metadata DB schemaVersion={before_version} cannot be migrated to current {current_version}"
         )
 
-    final_version = schema_marker(db_path, schema_id) if not dry_run else current_version
+    before_version = (
+        schema_marker(db_path, schema_id) if not dry_run else V17_SCHEMA_VERSION
+    )
+    if before_version == V17_SCHEMA_VERSION and current_version > V17_SCHEMA_VERSION:
+        if dry_run:
+            steps.append(
+                {
+                    "schema": SCHEMA,
+                    "action": "would-finalize-v17-to-current",
+                    "metadataDb": str(db_path),
+                    "schemaId": schema_id,
+                    "fromSchemaVersion": V17_SCHEMA_VERSION,
+                    "toSchemaVersion": current_version,
+                }
+            )
+        else:
+            backup_path = backup_database(db_path, backup_dir, "v17-to-current")
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.executescript(current_imported_known_files_sql(rust_repo))
+                conn.execute(
+                    "UPDATE metadata_schema SET schema_version = ? WHERE schema_id = ?",
+                    (current_version, schema_id),
+                )
+                conn.commit()
+            steps.append(
+                {
+                    "schema": SCHEMA,
+                    "action": "finalized-v17-to-current",
+                    "metadataDb": str(db_path),
+                    "backup": str(backup_path),
+                    "schemaId": schema_id,
+                    "fromSchemaVersion": V17_SCHEMA_VERSION,
+                    "toSchemaVersion": current_version,
+                }
+            )
+
+    final_version = (
+        schema_marker(db_path, schema_id) if not dry_run else current_version
+    )
     if any(str(step.get("action", "")).startswith("would-") for step in steps):
         action = "would-migrate-to-current"
-    elif all(step.get("action") == "noop-current" for step in steps):
+    elif all(
+        step.get("action") in ("noop-current", "noop-v17-shape-current")
+        for step in steps
+    ):
         action = "noop-current"
     else:
         action = "migrated-to-current"

@@ -69,7 +69,9 @@ def test_run_response_conformance_invokes_rest_contract_budget() -> None:
     assert summary["event_stream"] == {"ok": True, "operationId": "getEvents"}
 
 
-def test_load_rest_smoke_module_pins_rust_openapi_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_rest_smoke_module_pins_rust_openapi_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observed: dict[str, str | None] = {}
     monkeypatch.delenv(rust_rest_conformance.OPENAPI_CONTRACT_ENV, raising=False)
 
@@ -83,13 +85,22 @@ def test_load_rest_smoke_module_pins_rust_openapi_path(monkeypatch: pytest.Monke
 
     rust_rest_conformance.load_rest_smoke_module()
 
-    assert observed["during_load"] == str(rust_rest_conformance.RUST_OPENAPI_CONTRACT_PATH)
-    assert rust_rest_conformance.OPENAPI_CONTRACT_ENV not in rust_rest_conformance.os.environ
+    assert observed["during_load"] == str(
+        rust_rest_conformance.RUST_OPENAPI_CONTRACT_PATH
+    )
+    assert (
+        rust_rest_conformance.OPENAPI_CONTRACT_ENV
+        not in rust_rest_conformance.os.environ
+    )
 
 
-def test_load_rest_smoke_module_restores_existing_openapi_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_rest_smoke_module_restores_existing_openapi_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observed: dict[str, str | None] = {}
-    monkeypatch.setenv(rust_rest_conformance.OPENAPI_CONTRACT_ENV, "operator-contract.yaml")
+    monkeypatch.setenv(
+        rust_rest_conformance.OPENAPI_CONTRACT_ENV, "operator-contract.yaml"
+    )
 
     def load_script_module(_module_name: str, _filename: str) -> object:
         observed["during_load"] = rust_rest_conformance.os.environ.get(
@@ -101,8 +112,13 @@ def test_load_rest_smoke_module_restores_existing_openapi_path(monkeypatch: pyte
 
     rust_rest_conformance.load_rest_smoke_module()
 
-    assert observed["during_load"] == str(rust_rest_conformance.RUST_OPENAPI_CONTRACT_PATH)
-    assert rust_rest_conformance.os.environ[rust_rest_conformance.OPENAPI_CONTRACT_ENV] == "operator-contract.yaml"
+    assert observed["during_load"] == str(
+        rust_rest_conformance.RUST_OPENAPI_CONTRACT_PATH
+    )
+    assert (
+        rust_rest_conformance.os.environ[rust_rest_conformance.OPENAPI_CONTRACT_ENV]
+        == "operator-contract.yaml"
+    )
 
 
 def test_rust_openapi_network_tags_are_mapped_to_rest_families() -> None:
@@ -116,7 +132,9 @@ def test_rust_openapi_network_tags_are_mapped_to_rest_families() -> None:
 
 def test_rust_openapi_live_disruptive_operations_are_unsafe() -> None:
     module = rust_rest_conformance.load_rest_smoke_module()
-    routes_by_operation = {route["operationId"]: route for route in module.REST_CONTRACT_ROUTES}
+    routes_by_operation = {
+        route["operationId"]: route for route in module.REST_CONTRACT_ROUTES
+    }
 
     for operation_id in {
         "refreshNat",
@@ -140,9 +158,11 @@ def test_rust_openapi_live_disruptive_operations_are_unsafe() -> None:
 
 def test_rust_openapi_transfer_schema_includes_delivery_fields() -> None:
     module = rust_rest_conformance.load_rest_smoke_module()
-    transfer_properties = module.load_openapi_document()["components"]["schemas"]["Transfer"]["properties"]
+    transfer_properties = module.load_openapi_document()["components"]["schemas"][
+        "Transfer"
+    ]["properties"]
 
-    assert transfer_properties["deliveredPath"] == {"type": ["string", "null"]}
+    assert transfer_properties["deliveredPath"]["type"] == ["string", "null"]
     assert transfer_properties["inIncoming"] == {"type": "boolean"}
 
 
@@ -164,11 +184,30 @@ def test_rust_openapi_diagnostics_documents_transfer_event_runtime_metrics() -> 
         "nextEventId",
         "resumeBehavior",
     ]
-    assert schemas["TransferEventRuntimeDiagnostics"]["properties"]["stream"]["enum"] == ["sse"]
-    assert schemas["TransferEventRuntimeDiagnostics"]["properties"]["resumeBehavior"]["enum"] == ["reset"]
-    for field_name in ("channelCapacity", "queuedEventCount", "subscriberCount", "latestEventId"):
-        assert schemas["TransferEventRuntimeDiagnostics"]["properties"][field_name]["minimum"] == 0
-    assert schemas["TransferEventRuntimeDiagnostics"]["properties"]["nextEventId"]["minimum"] == 1
+    assert schemas["TransferEventRuntimeDiagnostics"]["properties"]["stream"][
+        "enum"
+    ] == ["sse"]
+    assert schemas["TransferEventRuntimeDiagnostics"]["properties"]["resumeBehavior"][
+        "enum"
+    ] == ["reset"]
+    for field_name in (
+        "channelCapacity",
+        "queuedEventCount",
+        "subscriberCount",
+        "latestEventId",
+    ):
+        assert (
+            schemas["TransferEventRuntimeDiagnostics"]["properties"][field_name][
+                "minimum"
+            ]
+            == 0
+        )
+    assert (
+        schemas["TransferEventRuntimeDiagnostics"]["properties"]["nextEventId"][
+            "minimum"
+        ]
+        == 1
+    )
 
 
 def test_run_response_conformance_rejects_api_root_base_url() -> None:
@@ -179,7 +218,9 @@ def test_run_response_conformance_rejects_api_root_base_url() -> None:
         rust_rest_conformance.run_response_conformance(
             "http://127.0.0.1:4711/api/v1",
             "test-key",
-            rest_smoke_module=SimpleNamespace(exercise_rest_contract_completeness=exercise),
+            rest_smoke_module=SimpleNamespace(
+                exercise_rest_contract_completeness=exercise
+            ),
             event_stream_checker=lambda _base_url, _api_key: {"ok": True},
         )
 
@@ -204,7 +245,9 @@ def test_run_response_conformance_raises_on_contract_failure() -> None:
         rust_rest_conformance.run_response_conformance(
             "http://127.0.0.1:4711",
             "test-key",
-            rest_smoke_module=SimpleNamespace(exercise_rest_contract_completeness=exercise),
+            rest_smoke_module=SimpleNamespace(
+                exercise_rest_contract_completeness=exercise
+            ),
             event_stream_checker=lambda _base_url, _api_key: {"ok": True},
         )
 
@@ -219,7 +262,9 @@ def test_run_response_conformance_reports_event_stream_failure() -> None:
         rust_rest_conformance.run_response_conformance(
             "http://127.0.0.1:4711",
             "test-key",
-            rest_smoke_module=SimpleNamespace(exercise_rest_contract_completeness=exercise),
+            rest_smoke_module=SimpleNamespace(
+                exercise_rest_contract_completeness=exercise
+            ),
             event_stream_checker=lambda _base_url, _api_key: {
                 "ok": False,
                 "reason": "missing reset",
@@ -228,7 +273,10 @@ def test_run_response_conformance_reports_event_stream_failure() -> None:
 
     assert raised.value.summary["ok"] is False
     assert raised.value.summary["failed_routes"] == ["getEvents"]
-    assert raised.value.summary["event_stream"] == {"ok": False, "reason": "missing reset"}
+    assert raised.value.summary["event_stream"] == {
+        "ok": False,
+        "reason": "missing reset",
+    }
 
 
 def write_transfer_event_openapi(path: Path) -> Path:
@@ -305,7 +353,9 @@ def test_run_event_stream_conformance_reads_resume_reset_frame(tmp_path: Path) -
 
 def test_run_event_stream_conformance_rejects_api_root_base_url() -> None:
     def opener(_request, *, timeout: float):
-        raise AssertionError("event stream opener should not run after base-url preflight failure")
+        raise AssertionError(
+            "event stream opener should not run after base-url preflight failure"
+        )
 
     with pytest.raises(ValueError, match="without a path"):
         rust_rest_conformance.run_event_stream_conformance(
@@ -316,7 +366,9 @@ def test_run_event_stream_conformance_rejects_api_root_base_url() -> None:
         )
 
 
-def test_run_event_stream_conformance_fails_without_stream_headers(tmp_path: Path) -> None:
+def test_run_event_stream_conformance_fails_without_stream_headers(
+    tmp_path: Path,
+) -> None:
     openapi_yaml = write_transfer_event_openapi(tmp_path / "REST-API-OPENAPI.yaml")
 
     def opener(_request, *, timeout: float):
@@ -328,7 +380,11 @@ def test_run_event_stream_conformance_fails_without_stream_headers(tmp_path: Pat
                 b'data: {"id":42,"type":"sync.reset","reason":"last-event-id","lastEventId":"1"}\n',
                 b"\n",
             ],
-            headers={"Cache-Control": "", "X-Contract-Version": "", "X-Accel-Buffering": ""},
+            headers={
+                "Cache-Control": "",
+                "X-Contract-Version": "",
+                "X-Accel-Buffering": "",
+            },
         )
 
     summary = rust_rest_conformance.run_event_stream_conformance(
@@ -347,7 +403,9 @@ def test_run_event_stream_conformance_fails_without_stream_headers(tmp_path: Pat
     ]
 
 
-def test_run_event_stream_conformance_fails_on_schema_invalid_payload(tmp_path: Path) -> None:
+def test_run_event_stream_conformance_fails_on_schema_invalid_payload(
+    tmp_path: Path,
+) -> None:
     openapi_yaml = write_transfer_event_openapi(tmp_path / "REST-API-OPENAPI.yaml")
 
     def opener(_request, *, timeout: float):
@@ -371,10 +429,14 @@ def test_run_event_stream_conformance_fails_on_schema_invalid_payload(tmp_path: 
 
     assert summary["ok"] is False
     assert "payloadSchemaError" in summary
-    assert "not valid under any of the given schemas" in str(summary["payloadSchemaError"])
+    assert "not valid under any of the given schemas" in str(
+        summary["payloadSchemaError"]
+    )
 
 
-def test_run_cli_writes_failed_conformance_report(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_run_cli_writes_failed_conformance_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     def exercise(_base_url: str, _api_key: str, _budget: str) -> dict[str, object]:
         return {"ok": False, "failed_routes": ["getApp"]}
 
@@ -409,7 +471,9 @@ def test_run_cli_writes_failed_conformance_report(monkeypatch: pytest.MonkeyPatc
     }
 
 
-def test_run_cli_reports_api_root_base_url_as_preflight_error(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_cli_reports_api_root_base_url_as_preflight_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     exit_code = rust_rest_conformance.run_cli(
         [
             "--base-url",

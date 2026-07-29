@@ -4,7 +4,10 @@ import sqlite3
 from pathlib import Path
 
 from emule_test_harness import rust_metadata
-from emule_test_harness.rust_soak_metadata_migration import migrate_to_current, migrate_v16_to_v17
+from emule_test_harness.rust_soak_metadata_migration import (
+    migrate_to_current,
+    migrate_v16_to_v17,
+)
 
 
 def workspace_root() -> Path:
@@ -95,17 +98,35 @@ def assert_known_files_accepts_not_published(db_path: Path) -> None:
 def test_migrates_v15_soak_metadata_to_current_shape(tmp_path: Path) -> None:
     db_path = tmp_path / "emulebb-rust-metadata.db"
     make_v15_db(db_path)
+    _schema_id, current_schema_version = rust_metadata._schema_marker(rust_repo())
 
-    result = migrate_to_current(db_path=db_path, rust_repo=rust_repo(), backup_dir=tmp_path)
+    result = migrate_to_current(
+        db_path=db_path, rust_repo=rust_repo(), backup_dir=tmp_path
+    )
 
     assert result["action"] == "migrated-to-current"
-    assert [step["action"] for step in result["steps"]] == ["migrated-v15-to-v16", "migrated-v16-to-v17"]
+    assert [step["action"] for step in result["steps"]] == [
+        "migrated-v15-to-v16",
+        "migrated-v16-to-v17",
+        "finalized-v17-to-current",
+    ]
     assert all(Path(str(step["backup"])).is_file() for step in result["steps"])
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("SELECT schema_version FROM metadata_schema").fetchone()[0] == 17
-        columns = [row[1] for row in conn.execute("PRAGMA table_info(shared_directory_roots)")]
+        assert (
+            conn.execute("SELECT schema_version FROM metadata_schema").fetchone()[0]
+            == current_schema_version
+        )
+        columns = [
+            row[1] for row in conn.execute("PRAGMA table_info(shared_directory_roots)")
+        ]
         assert "recursive" not in columns
-        assert conn.execute("SELECT count(*) FROM shared_directory_roots").fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT count(*) FROM imported_known_files").fetchone()[0] == 0
+        )
+        assert (
+            conn.execute("SELECT count(*) FROM shared_directory_roots").fetchone()[0]
+            == 1
+        )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert_known_files_accepts_not_published(db_path)
 
@@ -114,12 +135,17 @@ def test_migrates_v16_known_files_priority_constraint_to_v17(tmp_path: Path) -> 
     db_path = tmp_path / "emulebb-rust-metadata.db"
     make_v16_db_with_old_priority_check(db_path)
 
-    result = migrate_v16_to_v17(db_path=db_path, rust_repo=rust_repo(), backup_dir=tmp_path)
+    result = migrate_v16_to_v17(
+        db_path=db_path, rust_repo=rust_repo(), backup_dir=tmp_path
+    )
 
     assert result["action"] == "migrated-v16-to-v17"
     assert Path(str(result["backup"])).is_file()
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("SELECT schema_version FROM metadata_schema").fetchone()[0] == 17
+        assert (
+            conn.execute("SELECT schema_version FROM metadata_schema").fetchone()[0]
+            == 17
+        )
         assert conn.execute("SELECT count(*) FROM known_files").fetchone()[0] == 1
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert_known_files_accepts_not_published(db_path)
@@ -129,6 +155,9 @@ def test_current_schema_is_noop(tmp_path: Path) -> None:
     db_path = tmp_path / "emulebb-rust-metadata.db"
     rust_metadata.create_metadata_db(rust_repo(), db_path)
 
-    result = migrate_to_current(db_path=db_path, rust_repo=rust_repo(), backup_dir=tmp_path)
+    result = migrate_to_current(
+        db_path=db_path, rust_repo=rust_repo(), backup_dir=tmp_path
+    )
 
     assert result["action"] == "noop-current"
+    assert result["steps"] == []
