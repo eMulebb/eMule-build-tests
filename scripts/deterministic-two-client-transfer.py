@@ -920,8 +920,15 @@ def add_transfer(base_url: str, api_key: str, link: str, transfer_hash: str) -> 
         json_body={"link": link, "paused": False, "categoryId": 0},
         request_timeout_seconds=30.0,
     )
-    item = rest_smoke.require_transfer_add_result(result, transfer_hash)
-    return {"response": rest_smoke.compact_http_result(result), "item": item}
+    summary = rest_smoke.compact_http_result(result)
+    payload = response_payload(result, 200)
+    rows = (payload.get("items") or payload.get("results")) if isinstance(payload, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise AssertionError(summary)
+    item = rows[0]
+    if not isinstance(item, dict) or item.get("ok") is not True or str(item.get("hash") or "").lower() != transfer_hash.lower():
+        raise AssertionError(summary)
+    return {"response": summary, "item": item}
 
 
 def read_preferences_snapshot(config_dir: Path) -> dict[str, object]:

@@ -1221,6 +1221,37 @@ def test_add_and_connect_server_waits_past_transitional_connect_response(monkeyp
     assert calls.count(("GET", "/api/v1/status")) == 2
 
 
+def test_add_transfer_accepts_bulk_items_response_without_contract_gate(monkeypatch) -> None:
+    module = load_suite_module()
+    expected_hash = "9eced47df2edfbd72f29f93447d60b7b"
+    item = {"hash": expected_hash.upper(), "name": "deterministic-two-client-transfer.bin", "ok": True}
+    response = {
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "json": {"items": [item]},
+        "raw_json": {"data": {"items": [item]}, "meta": {"apiVersion": "v1"}},
+    }
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_http_request(_base_url, path, *, method="GET", json_body=None, **_kwargs):
+        calls.append((method, path, dict(json_body or {})))
+        return response
+
+    monkeypatch.setattr(module.rest_smoke, "http_request", fake_http_request)
+    monkeypatch.setattr(module.rest_smoke, "compact_http_result", lambda result: {"status": result["status"], "json": result["json"]})
+
+    result = module.add_transfer("http://127.0.0.1:4711", "key", "ed2k://|file|a|1|9ECED47DF2EDFBD72F29F93447D60B7B|/", expected_hash)
+
+    assert result["item"] == item
+    assert calls == [
+        (
+            "POST",
+            "/api/v1/transfers",
+            {"link": "ed2k://|file|a|1|9ECED47DF2EDFBD72F29F93447D60B7B|/", "paused": False, "categoryId": 0},
+        )
+    ]
+
+
 def test_wait_for_completed_file_timeout_carries_diagnostic_observations(tmp_path: Path) -> None:
     module = load_suite_module()
     snapshots = [{"transfer": {"status": 200, "json": {"state": "downloading"}}}]
