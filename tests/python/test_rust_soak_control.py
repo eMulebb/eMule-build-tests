@@ -2416,7 +2416,7 @@ def test_regular_log_proof_classifies_logs_and_keeps_report_sanitized(monkeypatc
     private_profile = tmp_path / "Private Profile"
     private_db = private_profile / "emulebb-rust-metadata.db"
     private_log_message = (
-        r"VPN Guard HTTP public IPv4 probe started from C:\Users\Operator\profile "
+        r"VPN Guard HTTP public IPv4 probe started from C:\Private\Operator\profile "
         "hash=0123456789abcdef0123456789abcdef"
     )
 
