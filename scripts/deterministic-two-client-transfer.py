@@ -822,7 +822,10 @@ def add_and_connect_server(base_url: str, api_key: str, *, address: str, port: i
     )
     if int(connect_result.get("status", 0)) != 200:
         raise RuntimeError(f"Connecting local ED2K server failed: {rest_smoke.compact_http_result(connect_result)!r}")
-    rest_smoke.require_json_object(connect_result, 200)
+    connect_summary = rest_smoke.compact_http_result(connect_result)
+    connect_payload = response_payload(connect_result, 200)
+    if not isinstance(connect_payload, dict):
+        raise RuntimeError(f"Connecting local ED2K server returned a non-object payload: {connect_summary!r}")
     connected = wait_for_emule_server_connected(
         base_url,
         api_key,
@@ -833,7 +836,7 @@ def add_and_connect_server(base_url: str, api_key: str, *, address: str, port: i
         "server": server,
         "servers_before_connect": rest_smoke.compact_http_result(servers_result),
         "add": add_summary,
-        "connect": rest_smoke.compact_http_result(connect_result),
+        "connect": connect_summary,
         "connected": connected,
     }
 

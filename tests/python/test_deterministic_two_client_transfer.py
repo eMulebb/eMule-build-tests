@@ -57,7 +57,6 @@ def test_resolve_manifest_repo_uses_workspace_deps(tmp_path: Path) -> None:
 
 
 def test_resolve_ed2k_server_exe_defaults_to_output_root(tmp_path: Path, monkeypatch) -> None:
-    module = load_suite_module()
     workspace = tmp_path / "workspaces" / "workspace"
     output_root = tmp_path.parent / f"{tmp_path.name}-output"
     monkeypatch.setenv("EMULEBB_WORKSPACE_ROOT", str(tmp_path))
@@ -69,7 +68,6 @@ def test_resolve_ed2k_server_exe_defaults_to_output_root(tmp_path: Path, monkeyp
 
 
 def test_build_or_skip_ed2k_server_binary_honors_explicit_exe_without_manifest(tmp_path: Path) -> None:
-    module = load_suite_module()
     workspace = tmp_path / "vm" / "workspace"
     server_exe = tmp_path / "harness" / "tools" / "goed2k-server.exe"
     server_exe.parent.mkdir(parents=True)
@@ -328,7 +326,6 @@ def test_write_server_met_creates_single_server_with_numeric_and_dynamic_ip(tmp_
 
 
 def test_build_server_config_uses_workspace_artifact_paths(tmp_path: Path) -> None:
-    module = load_suite_module()
     config_path = tmp_path / "state" / "artifacts" / "server" / "config.json"
     catalog_path = tmp_path / "state" / "artifacts" / "server" / "catalog.json"
 
@@ -354,7 +351,6 @@ def test_build_server_config_uses_workspace_artifact_paths(tmp_path: Path) -> No
 
 
 def test_build_server_config_allows_protocol_overrides(tmp_path: Path) -> None:
-    module = load_suite_module()
     config_path = tmp_path / "server" / "config.json"
     catalog_path = tmp_path / "server" / "catalog.json"
 
@@ -376,7 +372,6 @@ def test_build_server_config_allows_protocol_overrides(tmp_path: Path) -> None:
 
 
 def test_build_server_config_allows_admin_bind_override(tmp_path: Path) -> None:
-    module = load_suite_module()
     config_path = tmp_path / "server" / "config.json"
     catalog_path = tmp_path / "server" / "catalog.json"
 
@@ -410,7 +405,6 @@ def test_build_server_config_rejects_missing_ed2k_bind(tmp_path: Path) -> None:
 
 
 def test_build_server_config_allows_ed2k_bind_override(tmp_path: Path) -> None:
-    module = load_suite_module()
     config_path = tmp_path / "server" / "config.json"
     catalog_path = tmp_path / "server" / "catalog.json"
 
@@ -1160,6 +1154,71 @@ def test_add_and_connect_server_retries_transient_rest_socket_abort(monkeypatch)
     assert result["add"]["preloaded"] is True
     assert calls.count(("GET", "/api/v1/servers")) == 2
     assert ("POST", "/api/v1/servers/10.1.2.3:4661/operations/connect") in calls
+
+
+def test_add_and_connect_server_waits_past_transitional_connect_response(monkeypatch) -> None:
+    module = load_suite_module()
+    calls: list[tuple[str, str]] = []
+    status_payloads = [
+        {
+            "connected": False,
+            "connecting": True,
+            "currentServer": None,
+            "serverCount": 1,
+        },
+        {
+            "connected": True,
+            "connecting": False,
+            "currentServer": {"address": "10.1.2.3", "port": 4661, "name": "local"},
+            "serverCount": 1,
+        },
+    ]
+
+    def fake_http_request(_base_url, path, *, method="GET", **_kwargs):
+        calls.append((method, path))
+        if path == "/api/v1/servers":
+            return {"status": 200, "json": [{"address": "10.1.2.3", "port": 4661, "name": "local"}]}
+        if path == "/api/v1/servers/10.1.2.3:4661/operations/connect":
+            payload = {
+                "connected": False,
+                "connecting": True,
+                "currentServer": None,
+                "serverCount": 1,
+            }
+            return {
+                "status": 200,
+                "content_type": "application/json; charset=utf-8",
+                "json": payload,
+                "raw_json": {"data": payload, "meta": {"apiVersion": "v1"}},
+            }
+        if path == "/api/v1/status":
+            payload = status_payloads.pop(0)
+            return {
+                "status": 200,
+                "content_type": "application/json; charset=utf-8",
+                "json": payload,
+                "raw_json": {"data": payload, "meta": {"apiVersion": "v1"}},
+            }
+        raise AssertionError(path)
+
+    def fake_wait_for(resolve, *_args):
+        return resolve() or resolve()
+
+    monkeypatch.setattr(module.rest_smoke, "http_request", fake_http_request)
+    monkeypatch.setattr(module.rest_smoke, "compact_http_result", lambda result: {"status": result["status"], "json": result["json"]})
+    monkeypatch.setattr(module.live_common, "wait_for", fake_wait_for)
+
+    result = module.add_and_connect_server(
+        "http://127.0.0.1:4711",
+        "key",
+        address="10.1.2.3",
+        port=4661,
+        timeout_seconds=2.0,
+    )
+
+    assert result["connect"]["json"]["connecting"] is True
+    assert result["connected"]["observations"][-1]["connected"] is True
+    assert calls.count(("GET", "/api/v1/status")) == 2
 
 
 def test_wait_for_completed_file_timeout_carries_diagnostic_observations(tmp_path: Path) -> None:
