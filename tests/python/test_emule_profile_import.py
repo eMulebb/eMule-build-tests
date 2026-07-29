@@ -129,6 +129,7 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path, mon
     assert summary["kadBootstrapEndpoints"] == 1
     assert summary["importedUserHash"] is True
     assert summary["hashes"]["importedKnownRecords"] == 1
+    assert summary["hashes"]["manifestImport"]["importedRecords"] == 1
     assert summary["restBaseUrl"] == "http://192.0.2.10:58381/api/v1"
     assert summary["p2pBindIp"] is None
     assert summary["p2pBindInterface"] == "hide.me"
@@ -156,11 +157,20 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path, mon
             FROM imported_known_files
             """
         ).fetchall()
-        manifests = conn.execute("SELECT count(*) FROM transfers").fetchone()[0]
+        manifests = conn.execute(
+            """
+            SELECT lower(hex(known_files.ed2k_hash)), known_files.display_name,
+                   known_files.size_bytes, local_paths.display_path
+            FROM transfers
+            JOIN known_files ON known_files.id = transfers.known_file_id
+            LEFT JOIN local_paths ON local_paths.id = transfers.source_path_id
+            """
+        ).fetchall()
     assert roots == 1
     assert servers == [("45.82.80.155", 5687, "Local")]
     assert kad == [("1.2.3.4:4672",)]
     assert daemon_settings.get("p2pBindInterface") == "hide.me"
+    assert daemon_settings.get("initialSharedDirectoryReload") is False
     assert "p2pBindIp" not in daemon_settings
     assert identity == "aaaaaaaaaa0eccddeeff001122336f55"
     assert imported == [
@@ -174,7 +184,14 @@ def test_import_stock_mfc_profile_creates_fresh_rust_profile(tmp_path: Path, mon
             4,
         )
     ]
-    assert manifests == 0
+    assert manifests == [
+        (
+            "00112233445566778899aabbccddeeff",
+            payload.name,
+            payload.stat().st_size,
+            str(payload),
+        )
+    ]
 
 
 def test_import_stock_mfc_profile_requires_rest_lan_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

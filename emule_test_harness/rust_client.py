@@ -64,6 +64,7 @@ def write_rust_profile(
     replace_servers: bool = False,
     vpn_guard_mode: str = "off",
     vpn_guard_allowed_public_ip_cidrs: str = "",
+    initial_shared_directory_reload: bool | None = None,
 ) -> None:
     """Writes a minimal eMuleBB Rust profile for local harness runs.
 
@@ -89,6 +90,8 @@ def write_rust_profile(
         daemon_settings["p2pBindIp"] = p2p_bind_ip
     if p2p_bind_interface is not None:
         daemon_settings["p2pBindInterface"] = p2p_bind_interface
+    if initial_shared_directory_reload is not None:
+        daemon_settings["initialSharedDirectoryReload"] = initial_shared_directory_reload
     if daemon_settings:
         rust_metadata.replace_settings_section(metadata_path, "daemon", daemon_settings)
 

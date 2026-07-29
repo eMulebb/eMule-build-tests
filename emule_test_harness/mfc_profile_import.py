@@ -62,6 +62,7 @@ def import_stock_mfc_profile(
             "monitorOwned": False,
             "shareable": True,
             "accessible": True,
+            "recursive": True,
         }
         for root in root_entries
         if soak_launch.shared_root_path(root).strip("\\/")
@@ -90,6 +91,7 @@ def import_stock_mfc_profile(
             p2p_bind_interface=resolved_p2p_bind_interface,
             ed2k_port=ed2k_port,
             kad_port=kad_port,
+            initial_shared_directory_reload=False,
         )
         rust_metadata.seed_shared_directory_roots(metadata_db, seed_roots)
         for server in servers:
@@ -105,6 +107,16 @@ def import_stock_mfc_profile(
         known2_64_met=known2_64_met if known2_64_met.is_file() else None,
         dry_run=dry_run,
     )
+    manifest_summary = mfc_known_met.import_mfc_known_met_hashes(
+        rust_repo=rust_repo,
+        metadata_db=metadata_db,
+        known_met=known_met,
+        known2_64_met=known2_64_met if known2_64_met.is_file() else None,
+        shared_roots=seed_roots,
+        scan_shared_roots=True,
+        dry_run=dry_run,
+    )
+    hash_summary["manifestImport"] = manifest_summary
 
     return {
         "schemaVersion": 1,
