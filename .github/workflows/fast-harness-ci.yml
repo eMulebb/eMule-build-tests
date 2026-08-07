@@ -24,31 +24,31 @@ jobs:
 
     steps:
       - name: Checkout test harness
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: repos/emulebb-build-tests
 
       - name: Checkout app source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: emulebb/emulebb
           ref: main
           path: workspaces/workspace/app/emulebb-main
 
       - name: Checkout tooling docs
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: emulebb/emulebb-tooling
           path: repos/emulebb-tooling
 
       - name: Checkout build tooling
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: emulebb/emulebb-build
           path: repos/emulebb-build
 
       - name: Checkout Rust client
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: emulebb/emulebb-rust
           path: repos/emulebb-rust
@@ -57,7 +57,7 @@ jobs:
       # MiniUPnP source from repos/third_party/emulebb-miniupnp/miniupnpc, so the
       # Rust cargo integration tests need that third-party source materialized.
       - name: Checkout MiniUPnP third-party source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: emulebb/emulebb-miniupnp
           ref: miniupnpc-master-emule
